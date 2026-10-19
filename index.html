@@ -2745,10 +2745,10 @@ function findView(){
 }
 
 /* QR scanning */
-function parseQR(t){var m=String(t||'').trim().match(/^MFB\/([A-Za-z0-9]{3,8})\/([^\/]{1,20})\/([a-f0-9]{32})$/);return m?{code:m[1].toUpperCase(),label:m[2],secret:m[3]}:null}
+function parseQR(t){var x=String(t||'').trim();try{x=decodeURIComponent(x)}catch(e){}var m=x.match(/MFB\/([A-Za-z0-9]{3,8})\/([^\/\s]{1,20})\/([A-Fa-f0-9]{32})(?![A-Fa-f0-9])/);return m?{code:m[1].toUpperCase(),label:m[2],secret:m[3].toLowerCase()}:null}
 async function handleQR(text){
   var q=parseQR(text);
-  if(!q){C.scanErr='This is not a MyFoodBill table QR code.';return render()}
+  if(!q){var sh=String(text||'').replace(/\s+/g,' ').trim();C.scanErr='This is not a MyFoodBill table QR code.'+(sh?' The camera read: "'+sh.slice(0,60)+(sh.length>60?'...':'')+'"':'');if(C.cam&&C.stream&&window.__qrLoop){setTimeout(window.__qrLoop,1200);render();return}return render()}
   stopCam();
   try{
     var r=await rpc('scan_table',{p_code:q.code,p_label:q.label,p_secret:q.secret});
@@ -2775,6 +2775,7 @@ async function startCam(){
     C.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});C.cam=true;C.scanErr='';render();
     var v=document.getElementById('cam');
     (function loop(){
+      window.__qrLoop=loop;
       if(!C.cam||!C.stream)return;
       var el=document.getElementById('cam');
       if(el&&el.readyState>=2){det.detect(el).then(function(b){if(b&&b[0]&&C.cam){handleQR(b[0].rawValue)}else setTimeout(loop,300)}).catch(function(){setTimeout(loop,500)})}
