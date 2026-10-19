@@ -3904,7 +3904,7 @@ var LEGAL={
 };
 var LG={doc:''},DEL={open:false,txt:'',err:''};
 var LEGAL_DATE='15 October 2026';
-function supEmail(){return CFG.supportEmail||'manishaadsule20@gmail.com'}
+function supEmail(){return CFG.supportEmail||'myfoodbill20@gmail.com'}
 function legalOpen(d){LG.doc=d;window.scrollTo(0,0);render()}
 function legalClose(){LG.doc='';window.scrollTo(0,0);render()}
 function legalLinks(){return '<a href="#" onclick="helpOpen();return false">Help</a> · <a href="#" onclick="legalOpen(\'privacy\');return false">Privacy Policy</a> · <a href="#" onclick="legalOpen(\'terms\');return false">Terms of Use</a>'}
@@ -3928,7 +3928,7 @@ function delGo(){
     await forceLogout('Your account has been deleted.');sset('mfb_last',null);L.other=true;L.err='';L.note='Your account has been deleted.';render();
   });
 }
-var WEBAPP='https://manishaadsule20-git.github.io/myfoodbill/';
+var WEBAPP='https://myfoodbill-app.github.io/myfoodbill/';
 function copyWeb(){var t=WEBAPP;try{navigator.clipboard.writeText(t).then(function(){toast('Link copied',true)},function(){copyWeb2(t)})}catch(e){copyWeb2(t)}}
 function copyWeb2(t){try{var a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();document.execCommand('copy');document.body.removeChild(a);toast('Link copied',true)}catch(e){toast('Press and hold the link to copy it')}}
 function webLinkHtml(){return '<div class="cat">Use on a computer</div><div class="item"><div class="sub" style="margin:0 0 8px">Open this link in Chrome or Edge on your computer and log in with the same mobile number and password. Your menu and orders are the same on every device.</div><div class="note" style="margin:0 0 10px;word-break:break-all;user-select:all">'+WEBAPP+'</div><button class="btn" style="width:100%" onclick="copyWeb()">Copy link</button><div class="sub" style="margin:8px 0 0">Send the link to yourself by WhatsApp or email to open it on your computer.</div></div>'}
@@ -4235,7 +4235,7 @@ var GUIDE={
   ],
   [
    "Can I use MyFoodBill on a computer?",
-   "Yes. Open https://manishaadsule20-git.github.io/myfoodbill/ in Chrome or Edge and log in with the same mobile number and password. On a wide screen the app shows a side menu and wider pages. Owners can copy this link from Settings > Account > Use on a computer."
+   "Yes. Open https://myfoodbill-app.github.io/myfoodbill/ in Chrome or Edge and log in with the same mobile number and password. On a wide screen the app shows a side menu and wider pages. Owners can copy this link from Settings > Account > Use on a computer."
   ]
  ]
 };
