@@ -2679,6 +2679,7 @@ async function afterLogin(){
     if(S.prof.role==='owner'){O=Object.assign(O,{tab:'orders',needPlace:false,perr:''});await loadOwnerPlace()}
     else{C.view='find';await loadPlaces()}
     S.busy=false;S.loading=false;L=newL();window.scrollTo(0,0);render();
+    if(PENDQR){var pq=PENDQR;PENDQR='';try{history.replaceState(null,'',location.pathname+location.search)}catch(e2){}if(S.prof.role==='customer')handleQR(pq)}
   }catch(e){
     S.busy=false;S.loading=false;
     if(e.net&&S.sess){S.fatal=e.message;render()}
@@ -2745,7 +2746,7 @@ function findView(){
 }
 
 /* QR scanning */
-function parseQR(t){var x=String(t||'').trim();try{x=decodeURIComponent(x)}catch(e){}var m=x.match(/MFB\/([A-Za-z0-9]{3,8})\/([^\/\s]{1,20})\/([A-Fa-f0-9]{32})(?![A-Fa-f0-9])/);return m?{code:m[1].toUpperCase(),label:m[2],secret:m[3].toLowerCase()}:null}
+function parseQR(t){var x=String(t||'').trim();try{x=decodeURIComponent(x)}catch(e){}var m=x.match(/MFB\/([A-Za-z0-9]{3,8})\/([^\/]{1,20})\/([A-Fa-f0-9]{32})(?![A-Fa-f0-9])/);return m?{code:m[1].toUpperCase(),label:m[2],secret:m[3].toLowerCase()}:null}
 async function handleQR(text){
   var q=parseQR(text);
   if(!q){var sh=String(text||'').replace(/\s+/g,' ').trim();C.scanErr='This is not a MyFoodBill table QR code.'+(sh?' The camera read: "'+sh.slice(0,60)+(sh.length>60?'...':'')+'"':'');if(C.cam&&C.stream&&window.__qrLoop){setTimeout(window.__qrLoop,1200);render();return}return render()}
@@ -3147,7 +3148,7 @@ function menuAdminView(){
 }
 
 /* tables and QR */
-function qrText(t){return 'MFB/'+O.place.code+'/'+t.label+'/'+t.qr_secret}
+function qrText(t){return WEBAPP+'#MFB/'+O.place.code+'/'+encodeURIComponent(t.label)+'/'+t.qr_secret}
 function qrSvg(text){var q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag({cellSize:4,margin:16,scalable:true})}
 function addTable(){
   var l=O.tf.trim();if(!l){toast('Enter a table number or name');return}
@@ -3158,7 +3159,7 @@ async function reloadTables(){var r=await rest('dining_tables?place_id=eq.'+enco
 function delTable(id){act(async function(){await rest('dining_tables?id=eq.'+id,{method:'DELETE',prefer:'return=minimal'});O.askDel='';await reloadTables()})}
 function regenQR(id){act(async function(){await rpc('owner_regenerate_qr',{p_table:id});await reloadTables();toast('New QR made. Print it and replace the old one.',true)})}
 function tablesView(){
-  var h='<h1>Tables &amp; QR codes</h1><div class="sub noprint">Each table has its own secret QR code. Print them and stick one on each table. Customers can only order at a table after scanning its QR.</div>';
+  var h='<h1>Tables &amp; QR codes</h1><div class="sub noprint">Each table has its own secret QR code. Print them and stick one on each table. Customers scan it with the phone camera or the Scan button in the app, and can only order at a table after scanning its QR.</div>';
   h+='<div class="stick noprint"><div class="item" style="margin-bottom:0"><b>'+O.tables.length+' tables</b><div class="row" style="margin-top:8px"><input class="t" aria-label="New table number or name" placeholder="Table number or name" maxlength="10" value="'+esc(O.tf)+'" oninput="O.tf=this.value"><button class="btn" onclick="addTable()">Add table</button></div><button class="btn ghost" style="width:100%;margin-top:8px" onclick="mfbPrint()">Print all QR codes</button></div></div>';
   h+='<div class="printonly" style="text-align:center"><h1>'+esc(O.place.name)+'</h1><div>Code '+esc(O.place.code)+'</div></div>';
   h+='<div class="qrgrid">'+O.tables.map(function(t){return '<div class="item qrcard"><div class="row"><b class="sp" style="font-size:20px">Table '+esc(t.label)+'</b></div><div class="qrimg" role="img" aria-label="QR code for table '+esc(t.label)+'">'+qrSvg(qrText(t))+'</div><div class="sub" style="margin:4px 0 8px;word-break:break-all">'+esc(O.place.name)+' · Scan to order</div><div class="row noprint"><button class="btn ghost sm" onclick="regenQR(\''+t.id+'\')">New QR</button><button class="btn ghost sm" onclick="askDel(\''+t.id+'\')">Remove</button>'+(O.askDel===t.id?'<button class="btn sm" style="background:#c0392b" onclick="delTable(\''+t.id+'\')">Yes, remove</button>':'')+'</div><details class="noprint" style="margin-top:8px"><summary class="sub" style="margin:0;cursor:pointer">QR text (for testing)</summary><div class="sub" style="word-break:break-all;user-select:all">'+esc(qrText(t))+'</div></details></div>'}).join('')+'</div>';
@@ -3980,7 +3981,7 @@ var GUIDE={
    "t": "Order at your table (dine-in)",
    "w": "Scan the QR on your table, order, and pay after you are served.",
    "s": [
-    "Tap Scan table QR code and point the camera at the QR on your table. You will see Table verified by QR.",
+    "Tap Scan table QR code in the app and point the camera at the QR on your table. You will see Table verified by QR. You can also scan the QR with your phone's normal camera: it opens MyFoodBill in your browser, log in and your table opens.",
     "At the top, keep Table selected. Use All, Veg and Non-veg to filter the menu. These buttons stay on top while you scroll.",
     "Tap + on the dishes you want. Dishes with a half plate show Full and Half prices.",
     "Tap View cart, check the bill and tap Place order.",
@@ -4331,6 +4332,13 @@ function msHtml(){
   h+='<label class="btn" style="display:block;text-align:center;cursor:pointer">Choose menu photo<input type="file" accept="image/*" style="position:absolute;opacity:0;width:1px;height:1px" onchange="msFile(this)"></label></div>';
   return h;
 }
+
+/* a table QR is a web link, so the phone camera opens the app and the table */
+var PENDQR=(function(){try{var h=decodeURIComponent(location.hash||'');return parseQR(h)?h:''}catch(e){return ''}})();
+window.addEventListener('hashchange',function(){
+  try{var h=decodeURIComponent(location.hash||'');if(!parseQR(h))return;
+    if(S.prof&&S.prof.role==='customer'&&!S.needEmail){try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}handleQR(h)}else PENDQR=h}catch(e){}
+});
 </script>
 </body>
 </html>
