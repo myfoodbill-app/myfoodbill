@@ -4149,7 +4149,7 @@ var GUIDE={
    "t": "Build your menu",
    "w": "The Menu tab has two parts: Menu and Add item.",
    "s": [
-    "Fastest way: open Menu > Add item > Scan your menu card. Take a clear photo of your printed menu with your camera app, then tap Choose menu photo and pick it. This needs internet.",
+    "Fastest way: open Menu > Add item > Scan your menu card. Take a clear photo of your printed menu with your camera app. Choose the language on the menu card (English, Marathi and Hindi together is the default), then tap Choose menu photo and pick it. This needs internet. The first time it downloads the language readers, so it takes a minute or two.",
     "Check the list it reads. Fix any name or price, set Veg or Non-veg, remove lines you do not want, choose a category, and tap Save all items.",
     "Or add one dish yourself: type the item name, choose a category, Veg or Non-veg, the Full price and, if you have it, the Half price. Tap Save item.",
     "Tap Menu to see all your items by category. Change a price in the box, or turn an item off with the Available switch when it is sold out.",
@@ -4157,7 +4157,7 @@ var GUIDE={
     "Add or remove categories at the end of the Menu list."
    ],
    "n": [
-    "Always check scanned prices before saving. Clear, straight photos in good light read best; handwritten menus need more fixing.",
+    "Always check scanned names and prices before saving. Clear, straight photos in good light read best. Handwritten menus and fancy fonts need more fixing. If you only have English on the card, choose English only for a faster scan.",
     "Prices are checked again on the server for every order, so customers cannot change them."
    ],
    "shot": "o_additem"
@@ -4308,16 +4308,56 @@ function helpView(){
 }
 
 /* scan a menu card (photo -> text -> editable list) */
-var MS={st:'',pct:0,rows:[],err:'',cat:'',raw:''};
+var MSL=[['eng+mar+hin','English, Marathi and Hindi'],['eng','English only (fastest)'],['eng+mar','English and Marathi'],['eng+hin','English and Hindi']];
+var MS={st:'',pct:0,ph:'',rows:[],err:'',cat:'',raw:'',lang:(function(){try{var v=localStorage.getItem('mfbMsLang');if(MSL.some(function(x){return x[0]===v}))return v}catch(e){}return 'eng+mar+hin'})()};
+function msLang(v){MS.lang=v;try{localStorage.setItem('mfbMsLang',v)}catch(e){}}
+function msPrep(f){
+  /* clean the photo for reading: right size, grey, stronger contrast; falls back to the original file */
+  return (async function(){
+    try{
+      var bmp=window.createImageBitmap?await createImageBitmap(f):null;if(!bmp)return f;
+      var w=bmp.width,h=bmp.height,sc=1,big=Math.max(w,h);
+      if(big>2600)sc=2600/big;else if(w<1400)sc=Math.min(2,1600/w);
+      var cw=Math.max(1,Math.round(w*sc)),ch=Math.max(1,Math.round(h*sc)),c=document.createElement('canvas');c.width=cw;c.height=ch;
+      var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,cw,ch);x.drawImage(bmp,0,0,cw,ch);
+      var im=x.getImageData(0,0,cw,ch),d=im.data,i,g,px,py,N=cw*ch,gr=new Uint8Array(N);
+      for(i=0,px=0;px<N;px++,i+=4)gr[px]=(d[i]*299+d[i+1]*587+d[i+2]*114)/1000|0;
+      /* remove shadows: estimate the paper brightness in 16 px blocks, smooth it, divide it out */
+      var B=16,gw=Math.ceil(cw/B),gh=Math.ceil(ch/B),bg=new Float32Array(gw*gh),tmp=new Float32Array(gw*gh),gx,gy,yy,xx,v,m,t;
+      for(gy=0;gy<gh;gy++)for(gx=0;gx<gw;gx++){m=0;for(yy=gy*B;yy<Math.min(ch,gy*B+B);yy++)for(xx=gx*B;xx<Math.min(cw,gx*B+B);xx++){v=gr[yy*cw+xx];if(v>m)m=v}bg[gy*gw+gx]=m}
+      for(t=0;t<3;t++){
+        for(gy=0;gy<gh;gy++)for(gx=0;gx<gw;gx++){v=0;m=0;for(xx=Math.max(0,gx-2);xx<=Math.min(gw-1,gx+2);xx++){v+=bg[gy*gw+xx];m++}tmp[gy*gw+gx]=v/m}
+        for(gy=0;gy<gh;gy++)for(gx=0;gx<gw;gx++){v=0;m=0;for(yy=Math.max(0,gy-2);yy<=Math.min(gh-1,gy+2);yy++){v+=tmp[yy*gw+gx];m++}bg[gy*gw+gx]=v/m}
+      }
+      var hist=new Array(256).fill(0),fx,fy,x0,y0,x1,y1,b00,b10,b01,b11,bb;
+      for(py=0;py<ch;py++){
+        fy=Math.min(gh-1,Math.max(0,(py+0.5)/B-0.5));y0=fy|0;y1=Math.min(gh-1,y0+1);fy-=y0;
+        for(px=0;px<cw;px++){
+          fx=Math.min(gw-1,Math.max(0,(px+0.5)/B-0.5));x0=fx|0;x1=Math.min(gw-1,x0+1);fx-=x0;
+          b00=bg[y0*gw+x0];b10=bg[y0*gw+x1];b01=bg[y1*gw+x0];b11=bg[y1*gw+x1];
+          bb=(b00*(1-fx)+b10*fx)*(1-fy)+(b01*(1-fx)+b11*fx)*fy;if(bb<40)bb=40;
+          g=gr[py*cw+px]*255/bb;if(g>255)g=255;g|=0;gr[py*cw+px]=g;hist[g]++;
+        }
+      }
+      var lo=0,hi=255,a=0;
+      for(i=0;i<256;i++){a+=hist[i];if(a>N*0.005){lo=i;break}}a=0;
+      for(i=255;i>=0;i--){a+=hist[i];if(a>N*0.005){hi=i;break}}
+      if(hi-lo<40)return f;
+      var k=255/(hi-lo);
+      for(i=0,px=0;px<N;px++,i+=4){g=(gr[px]-lo)*k;g=g<0?0:g>255?255:g;d[i]=d[i+1]=d[i+2]=g}
+      x.putImageData(im,0,0);return c;
+    }catch(e){return f}
+  })();
+}
 function msParse(txt){
-  var out=[],NV=/chicken|mutton|egg|fish|prawn|keema|kheema|lamb|crab|non[\s-]*veg|beef|pork|bheja|tandoori chicken/i;
+  var out=[],NV=/chicken|mutton|egg|fish|prawn|keema|kheema|lamb|crab|non[\s-]*veg|beef|pork|bheja|tandoori chicken|चिकन|मटण|मटन|अंड[ाीे]|अण्ड[ाीे]|मासे|मासा|मछली|फिश|कोळंबी|झिंगा|प्रॉन|प्रॉन्स|खिमा|कीमा|केमा|बोकड|नॉन[\s-]*व्हेज|नॉन[\s-]*वेज/i;
   String(txt).split(/\r?\n/).forEach(function(l){
-    l=l.replace(/[|_~]/g,' ').replace(/\s+/g,' ').trim();if(l.length<3||!/\d\s*(?:\/-|\/|-)?\s*$/.test(l))return;
-    var nums=[],m,re=/(?:₹|rs\.?|inr)?\s*(\d{1,4}(?:\.\d{1,2})?)\s*(?:\/-|\/)?/gi,first=-1;
+    l=l.replace(/[\u0966-\u096F]/g,function(c){return String(c.charCodeAt(0)-0x966)}).replace(/[|_~]/g,' ').replace(/\s+/g,' ').trim();if(l.length<3||!/\d\s*(?:\/-|\/|-)?\s*$/.test(l))return;
+    var nums=[],m,re=/(?:₹|rs\.?|inr|रु\.?)?\s*(\d{1,4}(?:\.\d{1,2})?)\s*(?:\/-|\/)?/gi,first=-1;
     while((m=re.exec(l))){var v=parseFloat(m[1]);if(v>=5&&v<=9999){nums.push(v);if(first<0)first=m.index}}
     if(!nums.length||first<0)return;
     var name=l.slice(0,first).replace(/[.\-–—:·*=,]+$/g,'').replace(/^[\d.\-–—)*•\s]+/,'').replace(/[.\-–—:·*=,\s]+$/,'').replace(/\b(half|full|h|f)\s*$/i,'').trim();
-    if(name.replace(/[^A-Za-z]/g,'').length<2||name.length>60)return;
+    if(name.replace(/[^A-Za-z\u0900-\u097F]/g,'').length<2||name.length>60)return;
     var pf=nums[nums.length-1],ph=nums.length>1&&nums[0]<pf?nums[0]:'';
     out.push({n:name.replace(/\b([a-z])([a-z]*)/g,function(a,b,c){return b.toUpperCase()+c}),pf:String(pf),ph:ph===''?'':String(ph),veg:!NV.test(name),on:true});
   });
@@ -4332,10 +4372,11 @@ function msLoad(){
 }
 async function msFile(inp){
   var f=inp.files&&inp.files[0];inp.value='';if(!f)return;
-  MS.st='work';MS.pct=0;MS.err='';MS.rows=[];render();
+  MS.st='work';MS.pct=0;MS.ph='Preparing your photo…';MS.err='';MS.rows=[];render();
   try{
     await msLoad();
-    var r=await Tesseract.recognize(f,'eng',{logger:function(m){if(m.status==='recognizing text'){var p=Math.round(m.progress*100);if(p!==MS.pct){MS.pct=p;var e=document.getElementById('msp');if(e)e.textContent=p+'%'}}}});
+    MS.ph='Preparing your photo…';var img=await msPrep(f);
+    var r=await Tesseract.recognize(img,MS.lang,{logger:function(m){var ph=m.status==='recognizing text'?'Reading your menu…':(/load|init/i.test(m.status||'')?'Getting the reader ready (first time only)…':MS.ph);if(ph!==MS.ph){MS.ph=ph;var e2=document.getElementById('msph');if(e2)e2.textContent=ph}if(m.status==='recognizing text'){var p=Math.round(m.progress*100);if(p!==MS.pct){MS.pct=p;var e=document.getElementById('msp');if(e)e.textContent=p+'%'}}}});
     MS.raw=r.data.text||'';MS.rows=msParse(MS.raw);
     MS.st='review';if(!MS.rows.length)MS.err='No dishes with prices were found. Take a clearer, straight photo in good light, or add items one by one.';
   }catch(e){MS.st='';MS.err=e.message||'Could not read the photo.'}
@@ -4358,8 +4399,8 @@ function msSave(){
   });
 }
 function msHtml(){
-  var h='<div class="item"><b>Scan your menu card</b><div class="sub" style="margin:2px 0 8px">Take a clear photo of your printed menu with your camera app first, then choose it here. We read the dish names and prices. You check and fix them before saving. Needs internet.</div>';
-  if(MS.st==='work')return h+'<div class="note" role="status" style="margin:0">Reading your menu… <b id="msp">'+MS.pct+'%</b><br>The first time can take a minute.</div></div>';
+  var h='<div class="item"><b>Scan your menu card</b><div class="sub" style="margin:2px 0 8px">Take a clear photo of your printed menu with your camera app first, then choose it here. We read the dish names and prices in English, Marathi or Hindi. You check and fix them before saving. Needs internet.</div>';
+  if(MS.st==='work')return h+'<div class="note" role="status" style="margin:0"><span id="msph">'+esc(MS.ph||'Reading your menu…')+'</span> <b id="msp">'+MS.pct+'%</b><br>The first time downloads the Marathi and Hindi readers and can take a minute or two.</div></div>';
   if(MS.err)h+='<div class="err" role="alert" style="margin-bottom:8px">'+esc(MS.err)+'</div>';
   if(MS.st==='review'&&MS.rows.length){
     h+='<div class="sub" style="margin:0 0 6px">Found '+MS.rows.length+' items. Fix any mistakes, untick or remove what you do not want.</div>';
@@ -4371,6 +4412,7 @@ function msHtml(){
     h+='<div class="row" style="margin-top:12px"><button class="btn ghost" onclick="msCancel()">Cancel</button><button class="btn sp" onclick="msSave()">Save all items</button></div></div>';
     return h;
   }
+  h+='<label class="fl" for="msl" style="margin-top:0">Language on the menu card</label><select id="msl" class="t" style="margin-bottom:10px" onchange="msLang(this.value)">'+MSL.map(function(x){return '<option value="'+x[0]+'"'+(MS.lang===x[0]?' selected':'')+'>'+x[1]+'</option>'}).join('')+'</select>';
   h+='<label class="btn" style="display:block;text-align:center;cursor:pointer">Choose menu photo<input type="file" accept="image/*" style="position:absolute;opacity:0;width:1px;height:1px" onchange="msFile(this)"></label></div>';
   return h;
 }
