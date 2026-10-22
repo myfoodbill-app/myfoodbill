@@ -2515,11 +2515,11 @@ function ic(n){var P={store:'<path d="M4 9l1.5-5h13L20 9M4 9h16M5 9v11h14V9M10 2
 /* ---------- state ---------- */
 var S={sess:null,authUser:null,prof:null,loading:true,busy:false,fatal:''};
 var L=newL();
-function newL(){return {mode:'login',role:'c',name:'',rest:'',phone:'',email:'',pw:'',pw2:'',err:'',note:'',other:false}}
+function newL(){return {mode:'login',role:'c',name:'',rest:'',phone:'',email:'',pw:'',pw2:'',rc:'',rc2:'',err:'',note:'',other:false}}
 var V=newV();
 function newV(){return {email:'',code:'',err:'',sent:false}}
 var A=newA();
-function newA(){return {m:'',phone:'',email:'',code:'',sent:false,err:''}}
+function newA(){return {m:'',phone:'',email:'',code:'',cp:'',rc:'',rc2:'',sent:false,err:''}}
 var C={places:[],fq:'',fcode:'',ferr:'',place:null,menu:null,cart:{},type:'parcel',qr:null,vf:'all',view:'find',order:null,orders:[],pm:'upi',upiRef:'',pcm:'cash',pcRef:'',ful:'pickup',addrId:'',scanTxt:'',cam:false,stream:null,scanErr:''};
 var O={edit:'',ef:null,place:null,tab:'orders',orders:[],sf:'all',pf:'all',items:[],cats:[],tables:[],charges:[],pack:[],fm:{n:'',cat:'',veg:true,pf:'',ph:'',note:'',err:''},chf:{n:'',v:''},pkf:{n:'',c:'',per:'order'},tf:'',cf:'',needPlace:false,pn:'',pa:'',perr:'',askDel:''};
 var tt=null;
@@ -2547,7 +2547,7 @@ function setSess(j){
   sset('mfb_sess',JSON.stringify({s:S.sess,u:S.authUser}));
 }
 function saveUser(u){if(u&&u.id){S.authUser=u;sset('mfb_sess',JSON.stringify({s:S.sess,u:u}))}}
-function emailOk(){var u=S.authUser;return !!(u&&u.email&&u.email_confirmed_at)}
+function emailOk(){var u=S.authUser;return !!(u&&((u.email&&u.email_confirmed_at)||(u.user_metadata&&u.user_metadata.no_email===true)))}
 function phone10(){return String((S.authUser&&S.authUser.phone)||(S.prof&&S.prof.phone)||'').replace(/\D/g,'').slice(-10)}
 var RP=null;
 function refresh(){
@@ -2598,26 +2598,31 @@ async function doLogin(){
   catch(e){f.err=e.message;S.busy=false;render()}
 }
 async function doRegister(){
-  var f=L;f.err='';f.note='';
-  var em=f.email.trim().toLowerCase();
+  var f=L;f.err='';
+  var em=f.email.trim().toLowerCase(),rc=f.rc.trim();
   if(f.name.trim().length<2)f.err='Enter your name.';
   else if(f.role==='o'&&f.rest.trim().length<2)f.err='Enter your Food Place name.';
   else if(f.phone.length!==10)f.err='Enter a 10-digit mobile number.';
-  else if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em))f.err='Enter a valid email address.';
+  else if(em&&!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em))f.err='Enter a valid email address, or leave the email empty.';
   else if(f.pw.length<6)f.err='Password or PIN must be at least 6 characters.';
   else if(f.pw!==f.pw2)f.err='Password and Confirm password do not match.';
+  else if(rcWeak(rc,f.phone))f.err=rcWeak(rc,f.phone);
+  else if(f.rc2.trim()!==rc)f.err='Recovery code and Confirm recovery code do not match.';
+  else if(rc===f.pw)f.err='Your recovery code must be different from your password.';
   if(f.err)return render();
   S.busy=true;render();
   try{
-    var j=await http('/auth/v1/signup',{method:'POST',auth:false,body:{phone:'+91'+f.phone,password:f.pw,data:{role:f.role==='o'?'owner':'customer',name:f.name.trim(),phone:f.phone,rest:f.role==='o'?f.rest.trim():'',email:em}}});
+    var j=await http('/auth/v1/signup',{method:'POST',auth:false,body:{phone:'+91'+f.phone,password:f.pw,data:{role:f.role==='o'?'owner':'customer',name:f.name.trim(),phone:f.phone,rest:f.role==='o'?f.rest.trim():'',email:em,no_email:!em}}});
     if(!(j&&j.access_token))throw new Error('Mobile sign-up needs "Confirm phone" turned OFF in Supabase (Authentication > Sign In / Providers > Phone).');
     setSess(j);V=newV();V.email=em;
-    try{await sendEmailCode(em);V.sent=true}catch(e){V.err=e.message}
+    try{await rpc('set_recovery_code',{p_code:rc})}catch(e){RC.err=e.message}
+    if(em){try{await sendEmailCode(em);V.sent=true}catch(e){V.err=e.message}}
     await afterLogin();
   }catch(e){f.err=e.message;S.busy=false;render()}
 }
-var F={on:false,step:1,email:'',code:'',pw:'',pw2:'',err:''};
-function fgOpen(){F={on:true,step:1,email:'',code:'',pw:'',pw2:'',err:''};render()}
+var F={on:false,mode:'email',step:1,email:'',phone:'',rc:'',code:'',pw:'',pw2:'',err:''};
+function fgOpen(){F={on:true,mode:'email',step:1,email:'',phone:'',rc:'',code:'',pw:'',pw2:'',err:''};render()}
+function fgMode(m){F.mode=m;F.step=1;F.err='';render()}
 function fgClose(){F.on=false;F.err='';render()}
 function fgSend(){
   var em=F.email.trim().toLowerCase();F.err='';
@@ -2642,6 +2647,52 @@ function fgDone(){
     await afterLogin();
   });
 }
+function fgRecover(){
+  F.err='';var ph=String(F.phone).replace(/\D/g,'');
+  if(ph.length!==10)F.err='Enter your 10-digit mobile number.';
+  else if(!F.rc.trim())F.err='Enter your recovery code.';
+  else if(F.pw.length<6)F.err='New password or PIN must be at least 6 characters.';
+  else if(F.pw!==F.pw2)F.err='New password and Confirm password do not match.';
+  if(F.err)return render();
+  act(async function(){
+    var j;
+    try{j=await http('/rest/v1/rpc/reset_password_with_code',{method:'POST',auth:false,body:{p_phone:ph,p_code:F.rc,p_new:F.pw}})}
+    catch(e){F.err=e.message;throw e}
+    if(!(j&&j.ok)){F.err=(j&&j.error)||'The password could not be changed.';throw new Error(F.err)}
+    var pw=F.pw;
+    try{var t=await http('/auth/v1/token?grant_type=password',{method:'POST',body:{phone:'+91'+ph,password:pw},auth:false});setSess(t)}
+    catch(e){F.on=false;L=newL();L.note='Password changed. Please log in with your new password.';throw new Error('Password changed. Please log in with your new password.')}
+    F.on=false;L=newL();toast('Password changed. You are logged in.',true);
+    await afterLogin();
+  });
+}
+/* recovery code: asked once after login for accounts that have none */
+async function needRecPrompt(){
+  if(S.recSkip)return false;
+  var lt=parseInt(sget('mfb_rc_later')||'0',10);if(lt&&Date.now()-lt<3*864e5)return false;
+  try{var h=await rpc('has_recovery_code');return h===false}catch(e){return false}
+}
+var RC={code:'',code2:'',err:''};
+function rcWeak(c,ph){
+  c=String(c||'').trim().toLowerCase().replace(/\s+/g,' ');
+  if(c.length<6)return 'Recovery code must be at least 6 characters.';
+  if(c.length>40)return 'Recovery code is too long (40 characters at most).';
+  var seq=['01234567890123456789','98765432109876543210','abcdefghijklmnopqrstuvwxyz','zyxwvutsrqponmlkjihgfedcba','qwertyuiopasdfghjklzxcvbnm'],bad=['password','recovery','myfoodbill','welcome','iloveyou','abc123','qwerty123','admin123','india123','india@123','123123','121212','112233','147258','159753','pass123','letmein'];
+  if(/^([\s\S])\1*$/.test(c)||seq.some(function(q){return q.indexOf(c)>=0})||bad.indexOf(c)>=0)return 'That recovery code is too easy to guess. Choose something only you know.';
+  if(ph&&String(ph).length>=6&&String(ph).indexOf(c)>=0)return 'Do not use your mobile number as the recovery code.';
+  return '';
+}
+function recSave(){
+  RC.err='';var c=RC.code.trim();
+  if(rcWeak(c,S.prof&&S.prof.phone))RC.err=rcWeak(c,S.prof&&S.prof.phone);
+  else if(RC.code2.trim()!==c)RC.err='Recovery code and Confirm recovery code do not match.';
+  if(RC.err)return render();
+  act(async function(){
+    try{await rpc('set_recovery_code',{p_code:c})}catch(e){RC.err=e.message;throw e}
+    RC={code:'',code2:'',err:''};S.needRec=false;sset('mfb_rc_later',null);toast('Recovery code saved',true);await afterLogin();
+  });
+}
+function recLater(){S.recSkip=true;sset('mfb_rc_later',String(Date.now()));S.needRec=false;RC={code:'',code2:'',err:''};act(afterLogin)}
 async function sendEmailCode(em){var u=await http('/auth/v1/user',{method:'PUT',body:{email:em}});saveUser(u)}
 function vSend(){
   var em=V.email.trim().toLowerCase();V.err='';
@@ -2676,6 +2727,8 @@ async function afterLogin(){
       S.needEmail=true;S.busy=false;S.loading=false;L=newL();render();return;
     }
     S.needEmail=false;
+    if(await needRecPrompt()){S.needRec=true;S.busy=false;S.loading=false;L=newL();render();return}
+    S.needRec=false;
     if(S.prof.role==='owner'){O=Object.assign(O,{tab:'orders',needPlace:false,perr:''});await loadOwnerPlace()}
     else{C.view='find';await loadPlaces()}
     S.busy=false;S.loading=false;L=newL();window.scrollTo(0,0);render();
@@ -2688,7 +2741,7 @@ async function afterLogin(){
 }
 async function forceLogout(msg){
   try{if(S.sess)await http('/auth/v1/logout',{method:'POST',retry:false})}catch(e){}
-  stopCam();S.sess=null;S.authUser=null;S.prof=null;S.needEmail=false;V=newV();A=newA();S.busy=false;S.loading=false;sset('mfb_sess',null);
+  stopCam();S.sess=null;S.authUser=null;S.prof=null;S.needEmail=false;S.needRec=false;S.recSkip=false;S.hasRec=undefined;RC={code:'',code2:'',err:''};V=newV();A=newA();S.busy=false;S.loading=false;sset('mfb_sess',null);
   C=Object.assign(C,{place:null,menu:null,cart:{},qr:null,order:null,orders:[],stab:'acc',view:'find',fq:'',fcode:'',ferr:''});
   O=Object.assign(O,{place:null,orders:[],items:[],cats:[],tables:[],charges:[],pack:[],tab:'orders',stab:'place'});
   alReset();HLP.on=false;LG.doc='';F.on=false;R.rows=null;FB={step:0,msg:'',err:''};L=newL();if(msg)L.err=msg;window.scrollTo(0,0);render();
@@ -3282,14 +3335,17 @@ function authView(){
     h+='<label class="fl" for="rn">Your name</label><input id="rn" class="t" value="'+esc(f.name)+'" oninput="setL(\'name\',this.value)" autocomplete="name">';
     if(f.role==='o')h+='<label class="fl" for="rr">Food Place name</label><input id="rr" class="t" value="'+esc(f.rest)+'" oninput="setL(\'rest\',this.value)">';
     h+='<label class="fl" for="rp">Mobile number (this is your login)</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="rp" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" value="'+esc(f.phone)+'" oninput="dg(this,\'phone\',10)" autocomplete="tel-national"></div>';
-    h+='<label class="fl" for="re">Email</label><input id="re" class="t" type="email" placeholder="name@example.com" value="'+esc(f.email)+'" oninput="setL(\'email\',this.value)" autocomplete="email"><div class="sub" style="margin:4px 0 0">We will email you a 6-digit code to verify it.</div>';
+    h+='<label class="fl" for="re">Email (optional)</label><input id="re" class="t" type="email" placeholder="name@example.com" value="'+esc(f.email)+'" oninput="setL(\'email\',this.value)" autocomplete="email"><div class="sub" style="margin:4px 0 0">No email? Leave it empty. If you add one, we email a 6-digit code to verify it.</div>';
   }else if(back){
     h+='<div style="text-align:center;margin:2px 0 6px"><div class="sub" style="margin:0">Welcome back</div><div style="font-size:21px;font-weight:700">'+esc(rm.n||'')+'</div><div class="sub" style="margin:2px 0 0">'+maskMob(rm.p)+'</div></div>';
   }else{
     h+='<label class="fl" for="rp" style="margin-top:0">Mobile number</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="rp" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" value="'+esc(f.phone)+'" oninput="dg(this,\'phone\',10)" autocomplete="tel-national"></div>';
   }
   h+='<label class="fl" for="rw"'+(reg||!back?'':' style="margin-top:8px"')+'>'+(reg?'Create password or PIN':'Password or PIN')+'</label><input id="rw" class="t" type="password" placeholder="'+(reg?'At least 6 characters':'Your password or PIN')+'" value="'+esc(f.pw)+'" oninput="setL(\'pw\',this.value)" autocomplete="'+(reg?'new-password':'current-password')+'">';
-  if(reg)h+='<label class="fl" for="rw2">Confirm password or PIN</label><input id="rw2" class="t" type="password" placeholder="Re-enter" value="'+esc(f.pw2)+'" oninput="setL(\'pw2\',this.value)" autocomplete="new-password">';
+  if(reg)h+='<label class="fl" for="rw2">Confirm password or PIN</label><input id="rw2" class="t" type="password" placeholder="Re-enter" value="'+esc(f.pw2)+'" oninput="setL(\'pw2\',this.value)" autocomplete="new-password">'
+    +'<div class="cat" style="margin:14px -2px 0">Recovery code</div><div class="sub" style="margin:4px 0 0">If you forget your password, you can set a new one with your mobile number and this code, even without email. Choose something only you know, and write it down. Do not use your birth date or 1234.</div>'
+    +'<label class="fl" for="rc1">Recovery code</label><input id="rc1" class="t" type="password" placeholder="At least 6 characters" value="'+esc(f.rc)+'" oninput="setL(\'rc\',this.value)" autocomplete="off" autocapitalize="none">'
+    +'<label class="fl" for="rc2">Confirm recovery code</label><input id="rc2" class="t" type="password" placeholder="Re-enter" value="'+esc(f.rc2)+'" oninput="setL(\'rc2\',this.value)" autocomplete="off" autocapitalize="none">';
   if(f.err)h+='<div class="err" role="alert">'+esc(f.err)+'</div>';
   h+='<button class="btn" style="width:100%;margin-top:16px"'+(S.busy?' disabled':'')+' onclick="'+(reg?'doRegister()':'doLogin()')+'">'+(S.busy?'Please wait…':reg?'Register':'Log in')+'</button>';
   if(back)h+='<button class="lnk" style="margin-top:10px" onclick="notMe()">Not '+esc(rm.n||'you')+'? Use another account</button>';
@@ -3299,12 +3355,22 @@ function authView(){
   return h;
 }
 function forgotView(){
-  var h='<div style="text-align:center;margin:30px 0 20px">'+LOGO(64)+'<h1 style="margin:12px 0 4px">Reset your password</h1><div class="sub" style="margin:0">We will email a 6-digit code to the email address you registered with.</div></div><div class="item">';
-  if(F.step===1){
+  var cm=F.mode==='code';
+  var h='<div style="text-align:center;margin:30px 0 20px">'+LOGO(64)+'<h1 style="margin:12px 0 4px">Reset your password</h1><div class="sub" style="margin:0">'+(cm?'Use your mobile number and the recovery code you chose when you registered.':'We will email a 6-digit code to the email address you registered with.')+'</div></div>';
+  h+='<div class="seg">'+[['email','By email'],['code','With recovery code']].map(function(m){return '<button class="'+(F.mode===m[0]?'on':'')+'" onclick="fgMode(\''+m[0]+'\')">'+m[1]+'</button>'}).join('')+'</div><div class="item">';
+  if(cm){
+    h+='<label class="fl" for="fm" style="margin-top:0">Mobile number</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="fm" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" autocomplete="tel-national" value="'+esc(F.phone)+'" oninput="this.value=this.value.replace(/\\D/g,\'\').slice(0,10);F.phone=this.value"></div>';
+    h+='<label class="fl" for="fr">Recovery code</label><input id="fr" class="t" type="password" placeholder="The code you chose" autocomplete="off" autocapitalize="none" value="'+esc(F.rc)+'" oninput="F.rc=this.value">';
+    h+='<label class="fl" for="fp1">New password or PIN</label><input id="fp1" class="t" type="password" placeholder="At least 6 characters" autocomplete="new-password" value="'+esc(F.pw)+'" oninput="F.pw=this.value">';
+    h+='<label class="fl" for="fp2">Confirm new password or PIN</label><input id="fp2" class="t" type="password" placeholder="Re-enter" autocomplete="new-password" value="'+esc(F.pw2)+'" oninput="F.pw2=this.value">';
+    if(F.err)h+='<div class="err" role="alert">'+esc(F.err)+'</div>';
+    h+='<button class="btn" style="width:100%;margin-top:14px"'+(S.busy?' disabled':'')+' onclick="fgRecover()">'+(S.busy?'Please wait…':'Change password')+'</button>';
+    h+='<div class="note" style="margin-top:12px">After 5 wrong tries the reset is locked for an hour. Forgot the code too? Write to '+esc(supEmail())+'.</div>';
+  }else if(F.step===1){
     h+='<label class="fl" for="fe" style="margin-top:0">Your registered email</label><input id="fe" class="t" type="email" placeholder="name@example.com" autocomplete="email" value="'+esc(F.email)+'" oninput="F.email=this.value">';
     if(F.err)h+='<div class="err" role="alert">'+esc(F.err)+'</div>';
     h+='<button class="btn" style="width:100%;margin-top:14px"'+(S.busy?' disabled':'')+' onclick="fgSend()">'+(S.busy?'Please wait…':'Send code')+'</button>';
-    h+='<div class="note" style="margin-top:12px">Use the email you verified when you registered. Your mobile number stays your login.</div>';
+    h+='<div class="note" style="margin-top:12px">Use the email you verified when you registered. No email? Use the other tab: With recovery code.</div>';
   }else{
     h+='<div class="sub" style="margin:0 0 6px">Enter the code sent to <b>'+esc(F.email)+'</b>. It can take a minute. Check your spam folder too.</div>';
     h+='<label class="fl" for="fc">6-digit code</label><input id="fc" class="t" inputmode="numeric" maxlength="8" placeholder="123456" autocomplete="one-time-code" value="'+esc(F.code)+'" oninput="F.code=this.value.replace(/\\D/g,\'\');this.value=F.code">';
@@ -3315,6 +3381,14 @@ function forgotView(){
     h+='<div class="row" style="margin-top:10px"><button class="btn ghost sp" onclick="F.step=1;F.err=\'\';render()">Send a new code</button></div>';
   }
   return h+'<button class="lnk" style="margin-top:10px" onclick="fgClose()">‹ Back to log in</button></div>';
+}
+function recView(){
+  var h='<h1>Set your recovery code</h1><div class="sub">If you forget your password, you can set a new one with your mobile number and this code, even if you have no email. Choose something only you know, and write it down. Do not use your birth date or 1234.</div><div class="item">';
+  h+='<label class="fl" for="sr1" style="margin-top:0">Recovery code</label><input id="sr1" class="t" type="password" placeholder="At least 6 characters" autocomplete="off" autocapitalize="none" value="'+esc(RC.code)+'" oninput="RC.code=this.value">';
+  h+='<label class="fl" for="sr2">Confirm recovery code</label><input id="sr2" class="t" type="password" placeholder="Re-enter" autocomplete="off" autocapitalize="none" value="'+esc(RC.code2)+'" oninput="RC.code2=this.value">';
+  if(RC.err)h+='<div class="err" role="alert">'+esc(RC.err)+'</div>';
+  h+='<button class="btn" style="width:100%;margin-top:14px"'+(S.busy?' disabled':'')+' onclick="recSave()">'+(S.busy?'Please wait…':'Save recovery code')+'</button><button class="btn ghost" style="width:100%;margin-top:8px"'+(S.busy?' disabled':'')+' onclick="recLater()">Not now</button></div>';
+  return h;
 }
 function verifyView(){
   var h='<h1>Verify your email</h1>';
@@ -3328,6 +3402,15 @@ function verifyView(){
 /* account section (mobile + email) for Settings */
 function accOpen(m){A=newA();A.m=m;render()}
 function accCancel(){A=newA();render()}
+function rcLoad(){S.hasRec=null;rpc('has_recovery_code').then(function(h){S.hasRec=!!h;render()}).catch(function(){})}
+function accSaveRec(){
+  A.err='';var c=String(A.rc).trim(),need=S.hasRec===true;
+  if(need&&!A.cp)A.err='Enter your current password.';
+  else if(rcWeak(c,S.prof&&S.prof.phone))A.err=rcWeak(c,S.prof&&S.prof.phone);
+  else if(String(A.rc2).trim()!==c)A.err='Recovery code and Confirm recovery code do not match.';
+  if(A.err)return render();
+  act(async function(){try{await rpc('set_recovery_code',{p_code:c,p_password:need?A.cp:null});S.hasRec=true;sset('mfb_rc_later',null);A=newA();toast('Recovery code saved',true)}catch(e){A.err=e.message;throw e}});
+}
 async function reloadProfile(){var r=await rest('profiles?select=*&id=eq.'+encodeURIComponent(S.prof.id));if(r&&r[0])S.prof=r[0];sset('mfb_last',JSON.stringify({p:phone10(),n:S.prof.name}))}
 function accSavePhone(){
   var n=String(A.phone).replace(/\D/g,'');A.err='';
@@ -3387,10 +3470,17 @@ function accountHtml(){
   var h='<div class="cat">Your account</div><div class="item"><div class="row"><div class="sp"><span class="sub" style="margin:0">Name</span><br><b>'+esc(p.name)+'</b></div></div>';
   h+=row('Mobile (your login)',esc(fmtMob(p.phone))+' <span class="tag">Not verified</span>',A.m==='phone'?'':'<button class="btn ghost sm" onclick="accOpen(\'phone\')">Change</button>');
   if(A.m==='phone')h+='<div class="row" style="margin-top:8px"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="ap" class="t" inputmode="numeric" maxlength="10" aria-label="New mobile number" placeholder="New 10-digit number" value="'+esc(A.phone)+'" oninput="this.value=this.value.replace(/\\D/g,\'\');A.phone=this.value"></div><div class="row" style="margin-top:8px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="accSavePhone()">Save number</button><button class="btn ghost sp" onclick="accCancel()">Cancel</button></div>';
-  h+=row('Email',esc(p.email||'')+' <span class="tag">Verified</span>',A.m==='email'?'':'<button class="btn ghost sm" onclick="accOpen(\'email\')">Change</button>');
+  h+=row('Email',p.email?esc(p.email)+' <span class="tag">Verified</span>':'<span class="sub" style="margin:0">Not added</span>',A.m==='email'?'':'<button class="btn ghost sm" onclick="accOpen(\'email\')">'+(p.email?'Change':'Add')+'</button>');
   if(A.m==='email'){
     if(!A.sent)h+='<input id="ae" class="t" style="margin-top:8px" type="email" aria-label="New email" placeholder="New email address" value="'+esc(A.email)+'" oninput="A.email=this.value"><div class="sub" style="margin:4px 0 0">We will email a 6-digit code to the new address. Your email changes only after you enter it.</div><div class="row" style="margin-top:8px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="accSendEmail()">Send code</button><button class="btn ghost sp" onclick="accCancel()">Cancel</button></div>';
     else h+='<div class="sub" style="margin:8px 0 0">Enter the 6-digit code sent to <b>'+esc(A.email)+'</b>.</div><input id="ac" class="t" style="margin-top:6px" inputmode="numeric" maxlength="8" aria-label="6-digit code" placeholder="123456" value="'+esc(A.code)+'" oninput="this.value=this.value.replace(/\\D/g,\'\');A.code=this.value"><div class="row" style="margin-top:8px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="accVerifyEmail()">Verify</button><button class="btn ghost sp" onclick="accSendEmail()">Send a new code</button></div><button class="lnk" style="margin-top:6px" onclick="accCheck()">Email has a link instead? Click it, then tap here</button><button class="lnk" style="margin-top:6px" onclick="accCancel()">Cancel</button>';
+  }
+  if(S.hasRec===undefined)rcLoad();
+  h+=row('Recovery code (to reset a forgotten password)',S.hasRec===true?'Set <span class="tag">Hidden</span>':S.hasRec===false?'<span style="color:#b45309">Not set</span>':'…',A.m==='rec'||S.hasRec==null?'':'<button class="btn ghost sm" onclick="accOpen(\'rec\')">'+(S.hasRec?'Change':'Set')+'</button>');
+  if(A.m==='rec'){
+    h+='<div class="sub" style="margin:8px 0 0">Choose something only you know and write it down. You use it with your mobile number if you forget your password.</div>';
+    if(S.hasRec===true)h+='<label class="fl" for="acp">Your current password</label><input id="acp" class="t" type="password" autocomplete="current-password" value="'+esc(A.cp)+'" oninput="A.cp=this.value">';
+    h+='<label class="fl" for="ar1">New recovery code</label><input id="ar1" class="t" type="password" placeholder="At least 6 characters" autocomplete="off" autocapitalize="none" value="'+esc(A.rc)+'" oninput="A.rc=this.value"><label class="fl" for="ar2">Confirm recovery code</label><input id="ar2" class="t" type="password" placeholder="Re-enter" autocomplete="off" autocapitalize="none" value="'+esc(A.rc2)+'" oninput="A.rc2=this.value"><div class="row" style="margin-top:8px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="accSaveRec()">'+(S.busy?'Please wait…':'Save recovery code')+'</button><button class="btn ghost sp" onclick="accCancel()">Cancel</button></div>';
   }
   if(A.err)h+='<div class="err" role="alert">'+esc(A.err)+'</div>';
   return h+'</div>';
@@ -3403,6 +3493,7 @@ function render(){
   if(S.fatal){AP.className='';AP.innerHTML='<div style="text-align:center;margin:60px 0 20px">'+LOGO(64)+'</div><div class="item"><b>Cannot connect</b><div class="sub" style="margin:4px 0 0">'+esc(S.fatal)+'</div><button class="btn" style="width:100%;margin-top:12px" onclick="S.fatal=\'\';S.loading=true;render();boot()">Try again</button><button class="btn ghost" style="width:100%;margin-top:8px" onclick="logout()">Log out</button></div>';return}
   if(!S.prof){AP.className='';AP.innerHTML=F.on?forgotView():authView();afterRender();return}
   if(S.needEmail){AP.className='';AP.innerHTML=hdr()+verifyView();return}
+  if(S.needRec){AP.className='';AP.innerHTML=hdr()+recView();return}
   var h=hdr(),nav=true,bar=false;
   if(S.prof.role==='owner'&&!O.needPlace){h+=alBanner();alWake();alBg()}
   if(S.prof.role==='owner'){
@@ -3424,7 +3515,7 @@ function afterRender(){
 var lastSig='';
 function typing(){var a=document.activeElement;return a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')}
 async function poll(){
-  if(!S.prof||S.busy||S.needEmail)return;
+  if(!S.prof||S.busy||S.needEmail||S.needRec)return;
   if(document.hidden&&S.prof.role!=='owner')return;
   try{
     if(S.prof.role==='owner'&&!O.needPlace&&O.tab==='orders'){await Promise.all([loadOrders(),fetchPlaceRow()]);var ch=alCheck(O.orders);var s=JSON.stringify([O.orders,O.place.is_open,alCount()]);if(s!==lastSig||ch){lastSig=s;if(!typing())render()}}
@@ -3810,7 +3901,7 @@ var LEGAL={
    [
     "What we collect",
     [
-     "When you register: your name, mobile number, email address and a password or PIN. Your password is stored in a scrambled form that nobody, including us, can read.",
+     "When you register: your name, mobile number, a password or PIN, a recovery code that you choose, and an email address if you wish to add one (the email is optional). Your password and recovery code are stored in a scrambled form that nobody, including us, can read.",
      "When you use the app: your orders (items, amounts, table or parcel, payment method, dates and times); for parcel delivery, the delivery addresses you choose to save; your comments if you send us feedback.",
      "If you are a Food Place owner: your Food Place name, address, contact number, UPI ID, menu, tables, charges, hours and the orders and sales your customers place.",
      "We do not collect your location, contacts, photos or files. The camera is used only to scan a table QR code, and the picture is not stored. We do not show advertisements and we do not sell your information."
@@ -3819,7 +3910,7 @@ var LEGAL={
    [
     "Why we use it",
     [
-     "To create your account and log you in; to send your order to the Food Place and show you its progress; to show Food Place owners the orders, bills and summaries they need; to email you a verification or password-reset code; and to improve the app using the feedback you send."
+     "To create your account and log you in; to send your order to the Food Place and show you its progress; to show Food Place owners the orders, bills and summaries they need; to email you a verification or password-reset code if you added an email, and to let you reset a forgotten password with your recovery code; and to improve the app using the feedback you send."
     ]
    ],
    [
@@ -3849,7 +3940,7 @@ var LEGAL={
      "You can delete your account any time in the app: Settings > Delete my account. This removes your login, profile, saved addresses and feedback.",
      "Customers: your past orders stay in the Food Place's records for their accounts, but your name, mobile number and delivery address are removed from them.",
      "Owners: your Food Place, menu, tables, charges and all its orders are deleted permanently. Download or print any summaries you need first.",
-     "If you cannot use the app, email {EMAIL} from your registered address and we will delete the account for you."
+     "If you cannot use the app, write to {EMAIL} with your registered mobile number (and from your registered email, if you added one). We will check that it is you and delete the account for you."
     ]
    ],
    [
@@ -3995,13 +4086,14 @@ var GUIDE={
    "w": "Create your account once. After that you log in with your mobile number and password.",
    "s": [
     "Open the app and tap Register, then choose Customer.",
-    "Enter your name, 10-digit mobile number, email and a password or PIN (at least 6 characters).",
-    "Tap Register. We email a 6-digit code. Type it in and tap Verify.",
+    "Enter your name, 10-digit mobile number and a password or PIN (at least 6 characters). The email is optional: leave it empty if you have none.",
+    "Choose a recovery code (at least 6 characters, only you know it) and write it down. You need it to reset a forgotten password if you have no email.",
+    "Tap Register. If you added an email, we email a 6-digit code. Type it in and tap Verify. With no email, you go straight in.",
     "Next time, log in with your mobile number and password. The app remembers you, so you only type the password.",
-    "Forgot your password? Tap Forgot password or PIN on the login page, enter your email, type the 6-digit code and choose a new password."
+    "Forgot your password? Tap Forgot password or PIN on the login page. Choose By email (type the 6-digit code we email) or With recovery code (enter your mobile number and your recovery code). Then choose a new password."
    ],
    "n": [
-    "Your email is verified by the code. Your mobile number is not checked by SMS, so please type it correctly."
+    "If you add an email, it is verified by the code. Your mobile number is not checked by SMS, so please type it correctly. After 5 wrong recovery code tries, the reset is locked for an hour."
    ],
    "shot": "c_login"
   },
@@ -4103,7 +4195,7 @@ var GUIDE={
    "t": "Settings: account, addresses and feedback",
    "w": "Everything about you is under Settings.",
    "s": [
-    "Account: see your name, mobile number and email. Change your mobile number or email here (a new email needs a 6-digit code).",
+    "Account: see your name, mobile number and email. Change your mobile number, or add or change your email here (an email needs a 6-digit code). You can also set or change your recovery code here (you need your current password to change it).",
     "Addresses: add, edit and delete delivery addresses and choose a default.",
     "Feedback: tell us if you are happy. If yes, you can write a review on Google Play. If not, send us a private message.",
     "Privacy Policy and Terms of Use are in the Account tab.",
@@ -4121,12 +4213,12 @@ var GUIDE={
    "w": "Create the owner account for your restaurant, hotel, nashta centre or dhaba.",
    "s": [
     "Tap Register and choose Owner.",
-    "Enter your name, Food Place name, mobile number, email and a password. Verify the 6-digit code we email you.",
+    "Enter your name, Food Place name, mobile number, a password and a recovery code. Email is optional; if you add one, verify the 6-digit code we email you.",
     "You get a short Food Place code. Customers use it to find you.",
     "Your 15-day free trial starts now, with up to 10 tables."
    ],
    "n": [
-    "Forgot your password? Use Forgot password or PIN on the login page."
+    "Forgot your password? Use Forgot password or PIN on the login page: By email, or With recovery code (mobile number plus your recovery code)."
    ],
    "shot": "o_orders"
   },
@@ -4255,7 +4347,7 @@ var GUIDE={
  "faq": [
   [
    "I forgot my password.",
-   "Tap Forgot password or PIN on the login page. We email a 6-digit code to your registered email."
+   "Tap Forgot password or PIN on the login page. Choose By email to get a 6-digit code, or With recovery code and enter your mobile number and the recovery code you chose. No email and no code? Write to {EMAIL}."
   ],
   [
    "My code did not arrive.",
