@@ -4449,7 +4449,7 @@ function msParse(txt){
     while((m=re.exec(l))){var v=parseFloat(m[1]);if(v>=5&&v<=9999){nums.push(v);if(first<0)first=m.index}}
     if(!nums.length||first<0)return;
     var name=l.slice(0,first).replace(/[.\-–—:·*=,]+$/g,'').replace(/^[\d.\-–—)*•\s]+/,'').replace(/[.\-–—:·*=,\s]+$/,'').replace(/\b(half|full|h|f)\s*$/i,'').trim();
-    if(name.replace(/[^A-Za-z\u0900-\u097F]/g,'').length<2||name.length>60)return;
+    if(name.replace(/[^A-Za-z\u0900-\u097F]/g,'').length<3||name.length>60)return;
     var pf=nums[nums.length-1],ph=nums.length>1&&nums[0]<pf?nums[0]:'';
     out.push({n:name.replace(/\b([a-z])([a-z]*)/g,function(a,b,c){return b.toUpperCase()+c}),pf:String(pf),ph:ph===''?'':String(ph),veg:!NV.test(name),on:true});
   });
@@ -4469,8 +4469,10 @@ async function msFile(inp){
     await msLoad();
     MS.ph='Preparing your photo…';var img=await msPrep(f);
     var r=await Tesseract.recognize(img,MS.lang,{logger:function(m){var ph=m.status==='recognizing text'?'Reading your menu…':(/load|init/i.test(m.status||'')?'Getting the reader ready (first time only)…':MS.ph);if(ph!==MS.ph){MS.ph=ph;var e2=document.getElementById('msph');if(e2)e2.textContent=ph}if(m.status==='recognizing text'){var p=Math.round(m.progress*100);if(p!==MS.pct){MS.pct=p;var e=document.getElementById('msp');if(e)e.textContent=p+'%'}}}});
-    MS.raw=r.data.text||'';MS.rows=msParse(MS.raw);
-    MS.st='review';if(!MS.rows.length)MS.err='No dishes with prices were found. Take a clearer, straight photo in good light, or add items one by one.';
+    var ls=r.data.lines||[];
+    /* keep only lines the reader is fairly sure about, so junk from a bad photo is not listed */
+    MS.raw=ls.length?ls.filter(function(l){return l.confidence>=60}).map(function(l){return l.text}).join('\n'):(r.data.text||'');MS.rows=msParse(MS.raw);
+    MS.st='review';if(!MS.rows.length)MS.err='No dishes could be read clearly. Take a flat, straight photo in good light. If the menu is on a computer or phone screen, take a screenshot instead of a photo of the screen. Or add items one by one.';
   }catch(e){MS.st='';MS.err=e.message||'Could not read the photo.'}
   render();
 }
@@ -4491,7 +4493,7 @@ function msSave(){
   });
 }
 function msHtml(){
-  var h='<div class="item"><b>Scan your menu card</b><div class="sub" style="margin:2px 0 8px">Take a clear photo of your printed menu with your camera app first, then choose it here. We read the dish names and prices in English, Marathi or Hindi. You check and fix them before saving. Needs internet.</div>';
+  var h='<div class="item"><b>Scan your menu card</b><div class="sub" style="margin:2px 0 8px">Take a clear photo of your printed menu with your camera app first, then choose it here. We read the dish names and prices in English, Marathi or Hindi. You check and fix them before saving. Needs internet. Menu on a screen? Use a screenshot, not a photo of the screen.</div>';
   if(MS.st==='work')return h+'<div class="note" role="status" style="margin:0"><span id="msph">'+esc(MS.ph||'Reading your menu…')+'</span> <b id="msp">'+MS.pct+'%</b><br>The first time downloads the Marathi and Hindi readers and can take a minute or two.</div></div>';
   if(MS.err)h+='<div class="err" role="alert" style="margin-bottom:8px">'+esc(MS.err)+'</div>';
   if(MS.st==='review'&&MS.rows.length){
