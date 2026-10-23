@@ -188,6 +188,15 @@ select.t{appearance:auto}
   #app.hasnav .bar>*{max-width:780px}
   .toast{bottom:28px}
 }
+
+/* big confirmation card shown to the delivery person after the customer confirms receipt */
+.rcvbox{background:#0b8a4f;color:#fff;border-radius:16px;padding:18px 16px 14px;margin:0 0 12px;text-align:center;box-shadow:0 6px 18px rgba(11,138,79,.35);border:3px solid #7ee2ae}
+.rcvbox .rc-ic{width:64px;height:64px;border-radius:50%;background:#fff;color:#0b8a4f;font-size:42px;line-height:64px;font-weight:800;margin:0 auto 8px}
+.rcvbox .rc-t{font-size:24px;font-weight:800;letter-spacing:.5px;line-height:1.15}
+.rcvbox .rc-s{font-size:15px;margin:4px 0 12px;opacity:.95}
+.rcvbox .rc-r{display:flex;justify-content:space-between;gap:10px;background:rgba(255,255,255,.16);border-radius:10px;padding:8px 12px;margin-top:6px;text-align:left;font-size:15px}
+.rcvbox .rc-r b{text-align:right;word-break:break-word}
+.rcvbox .rc-tok{font-size:34px;font-weight:800;letter-spacing:1px}
 </style>
 </head>
 <body>
@@ -2967,7 +2976,7 @@ function payBtn(o){
   return '';
 }
 function trackView(){
-  var o=C.order,fp=o.place_phone||(o.food_places&&o.food_places.contact_phone)||'',h='<h1>Token '+o.token+'</h1><div class="sub">'+esc(o.order_no)+'<br>'+esc(o.food_places?o.food_places.name:'')+' · '+(o.order_type==='table'?'Table '+esc(o.table_label):'Parcel')+'<br>'+fmtDT(o.created_at)+'</div>'+placeCard(Object.assign({},o.food_places||{},{contact_phone:fp,use_hours:false}));
+  var o=C.order,fp=o.place_phone||(o.food_places&&o.food_places.contact_phone)||'',h=(o.order_type==='parcel'&&o.approval==='ok'&&o.received_at?rcvBox(o):'')+'<h1>Token '+o.token+'</h1><div class="sub">'+esc(o.order_no)+'<br>'+esc(o.food_places?o.food_places.name:'')+' · '+(o.order_type==='table'?'Table '+esc(o.table_label):'Parcel')+'<br>'+fmtDT(o.created_at)+'</div>'+placeCard(Object.assign({},o.food_places||{},{contact_phone:fp,use_hours:false}));
   h+='<div class="item"><div class="row"><b class="sp">'+statusLabel(o)+'</b><span class="tag">'+payLabel(o)+'</span></div><div class="steps">'+[0,1,2,3].map(function(i){return '<div class="'+(o.approval==='ok'&&i<=o.status?'on':'')+'"></div>'}).join('')+'</div>';
   h+=(o.order_items||[]).map(function(i){return '<div class="tot"><span>'+esc(i.name)+'<span class="sub" style="display:block;margin:0">'+i.qty+' × '+rs(i.price_paise)+'</span></span><span>'+rs(i.price_paise*i.qty)+'</span></div>'}).join('');
   h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px">'+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div></div>';
@@ -2982,9 +2991,17 @@ function trackView(){
   }
   return h+'<button class="btn ghost" style="width:100%;margin-bottom:8px" onclick="C.view=\'menu\';render()">Order more</button>';
 }
+function rcvBox(o){
+  var dl=o.fulfilment==='delivery';
+  var rt=new Date(o.received_at).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true}).replace(/am|pm/,function(m){return m.toUpperCase()});
+  var row=function(l,v){return '<div class="rc-r"><span>'+l+'</span><b>'+v+'</b></div>'};
+  return '<div class="rcvbox" role="status" aria-live="polite"><div class="rc-ic" aria-hidden="true">✓</div><div class="rc-t">'+(dl?'DELIVERY CONFIRMED':'PICKUP CONFIRMED')+'</div><div class="rc-s">'+(dl?'The customer has received the parcel.':'The customer has collected the parcel.')+'</div>'
+    +'<div class="rc-r" style="justify-content:center"><span class="rc-tok">Token '+esc(String(o.token))+'</span></div>'
+    +row('Customer',esc(S.prof&&S.prof.name||''))+row('Order',esc(o.order_no))+(o.food_places&&o.food_places.name?row('Food Place',esc(o.food_places.name)):'')+(dl&&o.delivered_by?row('Delivered by',esc(o.delivered_by)):'')+row('Confirmed at',rt)+'</div>';
+}
 function parcelBlock(o){
   var dl=o.fulfilment==='delivery',h='';
-  if(o.received_at)return h+'<div class="ok" role="status"><b>You confirmed receiving this parcel.</b>'+(dl&&o.delivered_by?'<br>Delivered by: '+esc(o.delivered_by):'')+'<br>'+fmtDT(o.received_at)+'</div>';
+  if(o.received_at)return h;
   if(o.status<2)h+='<div class="item"><b>Your parcel is being prepared</b><div class="sub" style="margin:4px 0 0">'+(dl?'It will be delivered to your address. Keep Token '+o.token+' for reference.':'Come to collect it when it is ready. Keep Token '+o.token+' with you. You will see "Ready for pickup" here.')+'</div></div>';
   else{
     if(o.status===2)h+='<div class="ok" role="status">'+(dl?'<b>Your parcel is out for delivery.</b>'+(o.delivered_by?'<br>Delivered by: <b>'+esc(o.delivered_by)+'</b>':'')+'<br>Keep Token '+o.token+' ready.':'<b>Your parcel is ready.</b> Show Token '+o.token+' at the counter to collect it.')+'</div>';
@@ -3604,7 +3621,7 @@ function addrHtml(mode){
   if(AD.err&&!AD.f)h+='<div class="err" role="alert">'+esc(AD.err)+'</div>';
   return h;
 }
-function confirmDelivery(){act(async function(){await rpc('customer_confirm_delivery',{p_order:C.order.id});await fetchOrder(C.order.id);toast('Thank you. Receipt confirmed.',true)})}
+function confirmDelivery(){act(async function(){await rpc('customer_confirm_delivery',{p_order:C.order.id});await fetchOrder(C.order.id);window.scrollTo(0,0);toast('Thank you. Receipt confirmed.',true)})}
 
 /* ---------- summaries (owner and customer) with print ---------- */
 function ymd(d){function z(n){return n<10?'0'+n:''+n}return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())}
@@ -4249,6 +4266,7 @@ var GUIDE={
     "Add or remove categories at the end of the Menu list."
    ],
    "n": [
+    "If your menu is on a computer or phone screen, take a screenshot and scan that. A photo of a screen reads badly because of the screen dots and glare. Lines the app cannot read clearly are not listed.",
     "Always check scanned names and prices before saving. Clear, straight photos in good light read best. Handwritten menus and fancy fonts need more fixing. If you only have English on the card, choose English only for a faster scan.",
     "Prices are checked again on the server for every order, so customers cannot change them."
    ],
