@@ -2554,6 +2554,7 @@ function setSess(j){
   S.sess={access_token:j.access_token,refresh_token:j.refresh_token,expires_at:j.expires_at||(Math.floor(Date.now()/1000)+3000)};
   if(j.user)S.authUser=j.user;
   sset('mfb_sess',JSON.stringify({s:S.sess,u:S.authUser}));
+  bioSync();
 }
 function saveUser(u){if(u&&u.id){S.authUser=u;sset('mfb_sess',JSON.stringify({s:S.sess,u:u}))}}
 function emailOk(){var u=S.authUser;return !!(u&&((u.email&&u.email_confirmed_at)||(u.user_metadata&&u.user_metadata.no_email===true)))}
@@ -2738,6 +2739,9 @@ async function afterLogin(){
     S.needEmail=false;
     if(await needRecPrompt()){S.needRec=true;S.busy=false;S.loading=false;L=newL();render();return}
     S.needRec=false;
+    if(bioOn()&&sget('mfb_bio_uid')!==uid){bioClear();sset('mfb_bio_ask',null)}
+    if(!bioOn()&&sget('mfb_bio_ask')!=='1'&&bioState()==='ok'){S.needBio=true;S.busy=false;S.loading=false;L=newL();render();return}
+    S.needBio=false;
     if(S.prof.role==='owner'){O=Object.assign(O,{tab:'orders',needPlace:false,perr:''});await loadOwnerPlace()}
     else{C.view='find';await loadPlaces()}
     S.busy=false;S.loading=false;L=newL();window.scrollTo(0,0);render();
@@ -2749,8 +2753,10 @@ async function afterLogin(){
   }
 }
 async function forceLogout(msg){
-  try{if(S.sess)await http('/auth/v1/logout',{method:'POST',retry:false})}catch(e){}
-  stopCam();S.sess=null;S.authUser=null;S.prof=null;S.needEmail=false;S.needRec=false;S.recSkip=false;S.hasRec=undefined;RC={code:'',code2:'',err:''};V=newV();A=newA();S.busy=false;S.loading=false;sset('mfb_sess',null);
+  var keepBio=bioOn()&&!msg;
+  if(!keepBio)bioClear();
+  try{if(S.sess&&!keepBio)await http('/auth/v1/logout',{method:'POST',retry:false})}catch(e){}
+  stopCam();S.sess=null;S.authUser=null;S.prof=null;S.needEmail=false;S.needRec=false;S.needBio=false;S.recSkip=false;S.hasRec=undefined;RC={code:'',code2:'',err:''};V=newV();A=newA();S.busy=false;S.loading=false;sset('mfb_sess',null);
   C=Object.assign(C,{place:null,menu:null,cart:{},qr:null,order:null,orders:[],stab:'acc',view:'find',fq:'',fcode:'',ferr:''});
   O=Object.assign(O,{place:null,orders:[],items:[],cats:[],tables:[],charges:[],pack:[],tab:'orders',stab:'place'});
   alReset();HLP.on=false;LG.doc='';F.on=false;R.rows=null;FB={step:0,msg:'',err:''};L=newL();if(msg)L.err=msg;window.scrollTo(0,0);render();
@@ -2767,7 +2773,9 @@ async function boot(){
 
 /* ---------- customer ---------- */
 var PSEL='food_places?select=id,code,name,area,contact_phone,upi_id,is_accepting,use_hours,open_time,close_time,is_open,offers_delivery,delivery_charge_paise,address,pincode';
-async function loadPlaces(){C.places=await rest(PSEL+'&order=name.asc&limit=500')||[]}
+var PP=true;/* plan_parcel exists only after SQL step 15; the app still works without it */
+async function restP(q){try{return await rest(PSEL+(PP?',plan_parcel':'')+q)}catch(e){if(PP&&/plan_parcel/.test(String(e&&e.message||e))){PP=false;return await rest(PSEL+q)}throw e}}
+async function loadPlaces(){C.places=await restP('&order=name.asc&limit=500')||[]}
 async function loadMenu(p){
   var q='?place_id=eq.'+encodeURIComponent(p.id)+'&select=*';
   var r=await Promise.all([rest('menu_categories'+q+'&order=sort_order.asc'),rest('menu_items'+q+'&order=name.asc'),rest('bill_charges'+q+'&enabled=eq.true&order=name.asc'),rest('packing_materials'+q+'&enabled=eq.true&order=name.asc')]);
@@ -2778,7 +2786,7 @@ async function openPlace(code,qr){
   var p=C.places.filter(function(x){return x.code===code})[0];
   if(!p){await loadPlaces();p=C.places.filter(function(x){return x.code===code})[0]}
   if(!p)throw new Error('No Food Place with code '+code+'.');
-  var fr=await rest(PSEL+'&id=eq.'+encodeURIComponent(p.id));if(fr&&fr[0])Object.assign(p,fr[0]);
+  var fr=await restP('&id=eq.'+encodeURIComponent(p.id));if(fr&&fr[0])Object.assign(p,fr[0]);
   if(!C.place||C.place.id!==p.id){C.cart={};C.ful='pickup'}
   await loadMenu(p);C.place=p;C.qr=qr||(C.qr&&C.qr.code===code?C.qr:null);
   C.type=qrValid()?'table':'parcel';C.view='menu';C.vf='all';C.ferr='';C.fcode='';C.fq='';window.scrollTo(0,0);
@@ -2880,11 +2888,12 @@ function setType(t){
 function menuView(){
   var p=C.place,m=C.menu,h='';
   h+='<div class="row"><h1 class="sp">'+esc(p.name)+'</h1><button class="btn ghost sm" onclick="C.view=\'find\';render()">Change</button></div><div class="row" style="margin:6px 0 10px"><span class="tag" style="font-size:14px">Code: '+esc(p.code)+'</span></div>';
-  h+='<div class="stick"><div class="tabs">'+[['parcel','Parcel'],['table','Table']].map(function(t){return '<button class="'+(C.type===t[0]?'on':'')+'" onclick="setType(\''+t[0]+'\')">'+t[1]+'</button>'}).join('')+'</div>';
+  h+='<div class="stick"><div class="tabs">'+[['parcel','Parcel'],['table','Table']].filter(function(t){return !(p.plan_parcel===false&&t[0]==='parcel')}).map(function(t){return '<button class="'+(C.type===t[0]?'on':'')+'" onclick="setType(\''+t[0]+'\')">'+t[1]+'</button>'}).join('')+'</div>';
   h+='<div class="tabs one g3" style="margin-bottom:2px">'+[['all','All'],['veg','Veg'],['nv','Non-veg']].map(function(t){return '<button class="'+(C.vf===t[0]?'on':'')+'" onclick="C.vf=\''+t[0]+'\';render()">'+t[1]+'</button>'}).join('')+'</div>';
   h+='</div>';
   if(!p.is_open)h+='<div class="err" role="alert"><b>Closed now.</b> This Food Place is not taking orders right now.'+(p.use_hours?' Opening hours: '+hoursText(p)+'.':'')+'</div>';
   h+=placeCard(p);
+  if(p.plan_parcel===false&&C.type!=='table')return h+'<div class="note" role="status"><b>Dine-in orders only.</b> This Food Place does not take parcel orders in the app. Scan the QR code on your table to order.</div><button class="btn" style="width:100%;margin-top:10px" onclick="C.view=\'scan\';C.scanErr=\'\';render()">Scan table QR code</button>';
   h+=C.type==='table'?'<div class="ok" role="status">Table '+esc(C.qr.label)+' verified by QR. You pay after you are served.</div>':'<div class="sub">Order a parcel from anywhere and pay first. Then pick it up at the Food Place with your token number'+(p.offers_delivery?', or have it delivered to your address':'')+'. To order at a table, scan the QR on your table.</div>';
   var items=m.items.filter(function(i){return C.vf==='all'||(C.vf==='veg')===!!i.is_veg});
   if(!m.items.length)h+='<div class="item">This Food Place has not added its menu yet.</div>';
@@ -2942,8 +2951,29 @@ function addrLine(p){
   return '<div class="sub" style="margin:0 0 8px;white-space:pre-line"><b>Address:</b> '+esc(p.address)+(p.pincode?' - '+esc(p.pincode):'')+' <a href="'+esc(mapsLink(p))+'" target="_blank" rel="noopener" style="color:var(--g,#0e7f6c);font-weight:600">Open in Maps</a></div>';
 }
 function upiLink(amt){var p=C.place;return 'upi://pay?pa='+encodeURIComponent(p.upi_id)+'&pn='+encodeURIComponent(p.name)+'&am='+(amt/100).toFixed(2)+'&cu=INR&tn='+encodeURIComponent('MyFoodBill parcel '+p.code)}
+function qrSave(amt){
+  try{
+    var p=C.place,sv=document.querySelector('.upiqr svg');if(!sv)return;
+    var x=new XMLSerializer().serializeToString(sv);if(x.indexOf('xmlns=')<0)x=x.replace('<svg','<svg xmlns="http://www.w3.org/2000/svg"');
+    var im=new Image();
+    im.onload=function(){
+      var c=document.createElement('canvas');c.width=700;c.height=910;var g=c.getContext('2d');
+      g.fillStyle='#fff';g.fillRect(0,0,700,910);g.drawImage(im,50,40,600,600);
+      g.fillStyle='#10201e';g.textAlign='center';
+      g.font='bold 44px sans-serif';g.fillText('Pay '+rs(amt),350,710);
+      g.font='28px sans-serif';g.fillText(String(p.name||'').slice(0,34),350,760);
+      g.font='24px sans-serif';g.fillStyle='#555';g.fillText('Scan with any UPI app  ·  MyFoodBill',350,810);g.font='bold 24px sans-serif';g.fillStyle='#10201e';g.fillText('QR created: '+qrStamp(amt),350,860);
+      var d=c.toDataURL('image/png'),nm='MyFoodBill-pay-'+(p.code||'order')+'.png';
+      if(window.MFBAndroid&&MFBAndroid.saveImage)MFBAndroid.saveImage(d.split(',')[1],nm);
+      else{var a=document.createElement('a');a.href=d;a.download=nm;document.body.appendChild(a);a.click();a.remove();toast('QR picture saved.',true)}
+    };
+    im.src='data:image/svg+xml;base64,'+btoa(unescape(encodeURIComponent(x)));
+  }catch(e){toast('Could not save the picture. Take a screenshot instead.')}
+}
+function qrStamp(amt){var p=C.place||{},k=(p.code||'')+'|'+amt;if(C.qrKey!==k){C.qrKey=k;C.qrTs=Date.now()}
+  return new Date(C.qrTs).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'numeric',minute:'2-digit',second:'2-digit',hour12:true}).replace(/am|pm/,function(m){return m.toUpperCase()})}
 function payHelp(m,amt,refKey,remote){
-  if(m==='upi'&&remote&&C.place&&C.place.upi_id){var u=upiLink(amt);return '<div style="margin-top:10px"><b>Pay '+rs(amt)+' online</b><ol style="margin:6px 0 0;padding-left:20px;font-size:14px"><li>Tap <b>Pay with UPI app</b> below, or pay to the UPI ID shown here from any UPI app.</li><li>Pay exactly '+rs(amt)+'.</li><li>Come back here, enter the transaction ID from your UPI app, and place the order.</li></ol><div class="item" style="margin:10px 0 0"><div class="row"><span class="sp"><span class="sub" style="margin:0">Pay to UPI ID</span><br><b style="word-break:break-all">'+esc(C.place.upi_id)+'</b></span><button class="btn ghost sm" onclick="copyTxt(\''+esc(C.place.upi_id)+'\')">Copy</button></div></div><a class="btn" style="display:block;text-align:center;text-decoration:none;margin-top:8px" href="'+esc(u)+'">Pay with UPI app</a><label class="fl" for="ur">UPI transaction ID (required)</label><input id="ur" class="t" style="background:var(--card)" maxlength="30" placeholder="From your UPI app after paying" value="'+esc(C[refKey])+'" oninput="C[\''+refKey+'\']=this.value"></div>'}
+  if(m==='upi'&&remote&&C.place&&C.place.upi_id){var u=upiLink(amt);return '<div style="margin-top:10px"><b>Pay '+rs(amt)+' online</b><ol style="margin:6px 0 0;padding-left:20px;font-size:14px"><li>Copy the UPI ID below and pay it from any UPI app, or scan the QR code below with another phone.</li><li>Pay exactly '+rs(amt)+'.</li><li>Come back here, enter the transaction ID from your UPI app, and place the order.</li></ol><div class="item" style="margin:10px 0 0"><div class="row"><span class="sp"><span class="sub" style="margin:0">Pay to UPI ID</span><br><b style="word-break:break-all">'+esc(C.place.upi_id)+'</b></span><button class="btn ghost sm" onclick="copyTxt(\''+esc(C.place.upi_id)+'\')">Copy</button></div></div><div class="item upiqr" style="margin:10px 0 0;text-align:center"><b>Or pay by QR code</b><div class="sub" style="margin:2px 0 6px">Scan this with another phone, or take a screenshot of this screen, then in PhonePe, Google Pay or Paytm choose <b>Scan QR</b> and pick the screenshot from your gallery. The amount '+rs(amt)+' is already filled in.</div><div class="qrimg" style="max-width:230px;margin:0 auto" role="img" aria-label="UPI payment QR code for '+rs(amt)+'">'+qrSvg(u.replace(/%40/g,'@'))+'</div><div class="sub" style="margin:4px 0 0">QR created: <b>'+qrStamp(amt)+'</b></div><button class="btn ghost sm" style="margin-top:6px" onclick="qrSave('+amt+')">Save QR to gallery</button></div><a class="btn ghost" style="display:block;text-align:center;text-decoration:none;margin-top:10px" href="'+esc(u)+'">Open my UPI app to pay</a><div class="sub" style="margin:4px 0 0">If your UPI app shows a warning or a limit, use the UPI ID or the QR code above instead.</div><label class="fl" for="ur">UPI transaction ID (required)</label><input id="ur" class="t" style="background:var(--card)" maxlength="30" placeholder="From your UPI app after paying" value="'+esc(C[refKey])+'" oninput="C[\''+refKey+'\']=this.value"></div>'}
   if(m==='upi')return '<div style="margin-top:10px"><b>Pay online</b><ol style="margin:6px 0 0;padding-left:20px;font-size:14px"><li>Go to the counter and scan the QR code kept there with any UPI app.</li><li>Enter the amount and pay.</li><li>Come back here and tap the button.</li></ol><label class="fl" for="ur">UPI transaction ID (optional)</label><input id="ur" class="t" style="background:var(--card)" maxlength="30" placeholder="Helps the owner find your payment" value="'+esc(C[refKey])+'" oninput="C[\''+refKey+'\']=this.value"></div>';
   if(m==='card')return '<div class="sub" style="margin:10px 0 0">Pay by card on the card machine at the counter. Never type your card number in this app.</div>';
   return '<div class="sub" style="margin:10px 0 0">Give the cash to the staff. The owner confirms that they received it.</div>';
@@ -2966,8 +2996,8 @@ function placeOrder(){
 var ORDER_SEL='orders?select=*,order_items(*),food_places(name,code,contact_phone,address,pincode)';
 async function fetchOrder(id){var r=await rest(ORDER_SEL+'&id=eq.'+encodeURIComponent(id));if(!r||!r[0])throw new Error('Order not found.');C.order=r[0]}
 function openTrack(id){act(async function(){await fetchOrder(id);C.view='track';window.scrollTo(0,0)})}
-function statusLabel(o){return o.approval==='wait'?'Waiting for acceptance':o.approval==='rej'?'Not accepted':(o.order_type==='parcel'?(o.fulfilment==='delivery'?['Accepted','Preparing','Out for delivery','Delivered']:['Accepted','Preparing','Ready for pickup','Served (picked up)']):['Accepted','Preparing','Ready','Served'])[o.status]}
-function payLabel(o){return {paid:'Paid',cashpending:'Cash pending',upipending:'UPI pending',cardpending:'Card pending',refund:'Refund initiated',unpaid:o.approval==='rej'?'Rejected':'Unpaid'}[o.pay_status]||o.pay_status}
+function statusLabel(o){return o.approval==='wait'?'Waiting for acceptance':o.approval==='rej'?(o.cancelled_by==='customer'?(S.prof&&S.prof.role==='owner'?'Cancelled by customer':'Cancelled by you'):'Not accepted'):(o.order_type==='parcel'?(o.fulfilment==='delivery'?['Accepted','Preparing','Out for delivery','Delivered']:['Accepted','Preparing','Ready for pickup','Served (picked up)']):['Accepted','Preparing','Ready','Served'])[o.status]}
+function payLabel(o){return {paid:'Paid',cashpending:'Cash pending',upipending:'UPI pending',cardpending:'Card pending',refund:'Refund initiated',unpaid:o.approval==='rej'?(o.cancelled_by==='customer'?'Cancelled':'Rejected'):'Unpaid'}[o.pay_status]||o.pay_status}
 function isPend(o){return o.pay_status==='cashpending'||o.pay_status==='upipending'||o.pay_status==='cardpending'}
 function pmName(o){return o.pay_status==='cashpending'?'cash':o.pay_status==='upipending'?'UPI':'card'}
 function payBtn(o){
@@ -2982,7 +3012,11 @@ function trackView(){
   h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px">'+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div></div>';
   h+=payBtn(o);
   if(o.order_type==='parcel'&&o.fulfilment==='delivery')h+='<div class="item"><b>Deliver to</b><div class="sub" style="margin:4px 0 0;white-space:pre-line">'+esc(o.delivery_address||'')+'</div></div>';
-  if(o.approval==='wait')h+='<div class="item"><b>Waiting for the Food Place to accept your order</b><div class="sub" style="margin:4px 0 0">You will see the progress here once it is accepted.</div></div>';
+  if(o.approval==='wait'){
+    var canCx=(o.pay_status==='unpaid'||o.pay_status==='cashpending');
+    h+='<div class="item"><b>Waiting for the Food Place to accept your order</b><div class="sub" style="margin:4px 0 0">You will see the progress here once it is accepted.</div>'+(!canCx?'<div class="sub" style="margin:8px 0 0">You have already paid, so this order cannot be cancelled in the app. To cancel it or ask for a refund, please contact the Food Place'+(fp?': <a href="tel:'+esc(fp)+'"><b>'+esc(fp)+'</b></a>':'')+'.</div>':C.cxl===o.id?'<div class="sub" style="margin:10px 0 6px"><b>Cancel this order?</b> You have not paid anything.</div><div class="row"><button class="btn sp" style="background:#c0392b;border-color:#c0392b"'+(S.busy?' disabled':'')+' onclick="cancelOrder()">Yes, cancel order</button><button class="btn ghost sp" onclick="C.cxl=\'\';render()">No, keep it</button></div>':'<button class="btn ghost" style="width:100%;margin-top:10px;color:#c0392b;border-color:#c0392b" onclick="C.cxl=\''+o.id+'\';render()">Cancel order</button><div class="sub" style="margin:4px 0 0">You can cancel only until you pay or the Food Place accepts it.</div>')+'</div>';
+  }
+  else if(o.approval==='rej'&&o.cancelled_by==='customer')h+='<div class="item"><b>You cancelled this order</b><div class="sub" style="margin:4px 0 0">'+'You have not been charged.</div></div>';
   else if(o.approval==='rej')h+='<div class="item"><b>This order was not accepted</b><div class="sub" style="margin:4px 0 0">'+(o.pay_status==='refund'?'Any payment of '+rs(o.total_paise)+' will be refunded.':'You have not been charged.')+'</div></div>';
   else if(o.order_type==='parcel')h+=parcelBlock(o);
   else if(o.pay_status==='unpaid'){
@@ -3091,7 +3125,7 @@ function ownDelivery(o){
 function ordersView(){
   var h='<h1>Live orders</h1><div class="sub">New orders wait for you to Accept or Reject. Confirm payments here.</div>'+openCard();
   if(!O.orders.length)return h+'<div class="item">No orders yet. Orders from customers appear here.</div>';
-  var SF=[['all','All'],['new','New'],['prep','Preparing'],['served','Served'],['rej','Rejected']],PF=[['all','All'],['paid','Paid'],['unpaid','Unpaid']];
+  var SF=[['all','All'],['new','New'],['prep','Preparing'],['served','Served'],['rej','Rejected / cancelled']],PF=[['all','All'],['paid','Paid'],['unpaid','Unpaid']];
   h+='<div class="stick"><div class="sub" style="margin:0 0 4px">Status</div><div class="tabs g3" style="grid-template-columns:repeat(5,1fr)">'+SF.map(function(t){var n=O.orders.filter(function(o){return sPred(t[0],o)&&pPred(O.pf,o)}).length;return '<button class="'+(O.sf===t[0]?'on':'')+'" onclick="O.sf=\''+t[0]+'\';render()">'+t[1]+' ('+n+')</button>'}).join('')+'</div>';
   h+='<div class="sub" style="margin:0 0 4px">Payment</div><div class="tabs g3">'+PF.map(function(t){var n=O.orders.filter(function(o){return sPred(O.sf,o)&&pPred(t[0],o)}).length;return '<button class="'+(O.pf===t[0]?'on':'')+'" onclick="O.pf=\''+t[0]+'\';render()">'+t[1]+' ('+n+')</button>'}).join('')+'</div><div class="part" style="margin:4px -14px 0"></div></div><div style="height:10px"></div>';
   var FL=O.orders.filter(function(o){return sPred(O.sf,o)&&pPred(O.pf,o)});
@@ -3162,7 +3196,7 @@ function placeSettingsHtml(){
   +'</div><div class="cat">Contact number</div><div class="item"><label class="fl" for="cp" style="margin-top:0">Food Place mobile number (shown on customer bills)</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="cp" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" value="'+esc(p.contact_phone)+'" onchange="saveContact(this.value)"></div>'
   +'</div><div class="cat">Address</div><div class="item"><label class="fl" for="fa" style="margin-top:0">Food Place address (where you are situated)</label><textarea id="fa" class="t" rows="3" maxlength="300" placeholder="Shop or building, street, area, city" oninput="O.addrDraft=this.value" onchange="saveAddr()">'+esc(O.addrDraft!==undefined?O.addrDraft:(p.address||''))+'</textarea>'
   +'<div class="row" style="margin-top:8px"><span class="sp"><label class="fl" for="fz" style="margin-top:0">PIN code</label><input id="fz" class="t" inputmode="numeric" maxlength="6" placeholder="6 digits" value="'+esc(O.pinDraft!==undefined?O.pinDraft:(p.pincode||''))+'" oninput="this.value=this.value.replace(/\\D/g,\'\');O.pinDraft=this.value" onchange="saveAddr()"></span></div><div class="sub" style="margin:4px 0 0">Customers see this address and an Open in Maps button on your menu page. Pickup customers use it to find you.</div>'
-  +'</div><div class="cat">Online payments (UPI)</div><div class="item"><label class="fl" for="up" style="margin-top:0">UPI ID for online parcel payments</label><input id="up" class="t" maxlength="60" placeholder="e.g. yourname@okaxis" autocapitalize="none" value="'+esc(p.upi_id)+'" onchange="saveUpi(this.value)"><div class="sub" style="margin:4px 0 0">Customers who order a parcel from outside pay to this ID, then enter the transaction ID. Check your UPI app and tap Confirm on the order.</div>'
+  +'</div><div class="cat">Online payments (UPI)</div><div class="item"><label class="fl" for="up" style="margin-top:0">UPI ID for online parcel payments</label><div class="sub" style="margin:2px 0 6px">Use your business UPI ID if you have one. Personal accounts may show warnings or limits to customers.</div><input id="up" class="t" maxlength="60" placeholder="e.g. yourname@okaxis" autocapitalize="none" value="'+esc(p.upi_id)+'" onchange="saveUpi(this.value)"><div class="sub" style="margin:4px 0 0">Customers who order a parcel from outside pay to this ID, then enter the transaction ID. Check your UPI app and tap Confirm on the order.</div>'
   +'</div>';
 }
 
@@ -3260,6 +3294,7 @@ function menuAdminView(){
 
 /* tables and QR */
 function qrText(t){return WEBAPP+'#MFB/'+O.place.code+'/'+encodeURIComponent(t.label)+'/'+t.qr_secret}
+function qrWhen(t){var d=new Date(t.qr_created_at||Date.now());return d.toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'})+', '+d.toLocaleTimeString('en-IN',{hour:'numeric',minute:'2-digit',hour12:true})}
 function qrSvg(text){var q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag({cellSize:4,margin:16,scalable:true})}
 function addTable(){
   var l=O.tf.trim();if(!l){toast('Enter a table number or name');return}
@@ -3272,8 +3307,8 @@ function regenQR(id){act(async function(){await rpc('owner_regenerate_qr',{p_tab
 function tablesView(){
   var h='<h1>Tables &amp; QR codes</h1><div class="sub noprint">Each table has its own secret QR code. Print them and stick one on each table. Customers scan it with the phone camera or the Scan button in the app, and can only order at a table after scanning its QR.</div>';
   h+='<div class="stick noprint"><div class="item" style="margin-bottom:0"><b>'+O.tables.length+' tables</b><div class="row" style="margin-top:8px"><input class="t" aria-label="New table number or name" placeholder="Table number or name" maxlength="10" value="'+esc(O.tf)+'" oninput="O.tf=this.value"><button class="btn" onclick="addTable()">Add table</button></div><button class="btn ghost" style="width:100%;margin-top:8px" onclick="mfbPrint()">Print all QR codes</button></div></div>';
-  h+='<div class="printonly" style="text-align:center"><h1>'+esc(O.place.name)+'</h1><div>Code '+esc(O.place.code)+'</div></div>';
-  h+='<div class="qrgrid">'+O.tables.map(function(t){return '<div class="item qrcard"><div class="row"><b class="sp" style="font-size:20px">Table '+esc(t.label)+'</b></div><div class="qrimg" role="img" aria-label="QR code for table '+esc(t.label)+'">'+qrSvg(qrText(t))+'</div><div class="sub" style="margin:4px 0 8px;word-break:break-all">'+esc(O.place.name)+' · Scan to order</div><div class="row noprint"><button class="btn ghost sm" onclick="regenQR(\''+t.id+'\')">New QR</button><button class="btn ghost sm" onclick="askDel(\''+t.id+'\')">Remove</button>'+(O.askDel===t.id?'<button class="btn sm" style="background:#c0392b" onclick="delTable(\''+t.id+'\')">Yes, remove</button>':'')+'</div><details class="noprint" style="margin-top:8px"><summary class="sub" style="margin:0;cursor:pointer">QR text (for testing)</summary><div class="sub" style="word-break:break-all;user-select:all">'+esc(qrText(t))+'</div></details></div>'}).join('')+'</div>';
+  h+='<div class="printonly" style="text-align:center"><h1>'+esc(O.place.name)+'</h1><div>Code '+esc(O.place.code)+'</div><div>Printed: '+qrWhen({qr_created_at:new Date()})+'</div></div>';
+  h+='<div class="qrgrid">'+O.tables.map(function(t){return '<div class="item qrcard"><div class="row"><b class="sp" style="font-size:20px">Table '+esc(t.label)+'</b></div><div class="qrimg" role="img" aria-label="QR code for table '+esc(t.label)+'">'+qrSvg(qrText(t))+'</div><div class="sub" style="margin:4px 0 8px;word-break:break-all">'+esc(O.place.name)+' · Scan to order</div><div class="sub" style="margin:0 0 8px">QR created: '+qrWhen(t)+'</div><div class="row noprint"><button class="btn ghost sm" onclick="regenQR(\''+t.id+'\')">New QR</button><button class="btn ghost sm" onclick="askDel(\''+t.id+'\')">Remove</button>'+(O.askDel===t.id?'<button class="btn sm" style="background:#c0392b" onclick="delTable(\''+t.id+'\')">Yes, remove</button>':'')+'</div><details class="noprint" style="margin-top:8px"><summary class="sub" style="margin:0;cursor:pointer">QR text (for testing)</summary><div class="sub" style="word-break:break-all;user-select:all">'+esc(qrText(t))+'</div></details></div>'}).join('')+'</div>';
   return h;
 }
 
@@ -3310,16 +3345,24 @@ function ownSetView(){
 }
 
 /* subscription tab */
-var SLABS=[['1 to 5 tables',5,600],['6 to 10 tables',10,1200],['11 to 25 tables',25,2400],['26 to 50 tables',50,3600],['51 to 100 tables',100,4800],['More than 100 tables',1e9,6000]];
+var SLABS=[['1 to 5 tables, dine-in only (no parcel)',5,700],['1 to 5 tables, with parcel',5,1000],['6 to 10 tables',10,2000],['11 to 25 tables',25,4000],['26 to 50 tables',50,6000],['51 to 100 tables',100,8000],['More than 100 tables',1e9,10000]];
+var FREE_DAYS=15;
 function subHtml(p,days){
   var st=p.subscription_status,n=O.tables.length,cap=[5,10,25,50,100,0][Math.min(Math.max(+p.table_slab||0,0),5)];
-  var cur=0;while(cur<5&&n>SLABS[cur][1])cur++;
-  var h='<div class="cat">Your plan</div><div class="item"><b style="font-size:18px">'+(st==='trial'?'Free trial: '+days+' day'+(days===1?'':'s')+' left':'Plan: '+esc(st))+'</b>';
-  if(st==='trial')h+='<div class="sub" style="margin:4px 0 0">Trial ends on '+new Date(p.trial_ends_at).toLocaleDateString('en-IN',{day:'numeric',month:'long',year:'numeric'})+'. Everything in the app works during the trial'+(cap?', with up to '+cap+' tables':'')+'.</div>';
-  h+='<div class="sub" style="margin:8px 0 0">Your tables: <b>'+n+'</b>'+(n?'':' (parcel only)')+' · Plan for your tables: <b>'+SLABS[cur][0]+', '+rs(SLABS[cur][2]*100)+' a month, including all taxes</b></div>';
-  h+='</div><div class="cat">Included in every plan</div><div class="item"><div style="line-height:1.7">Dine-in orders with table QR codes<br>Parcel orders, pickup and home delivery<br>Saved customer addresses and delivery details<br>Bills with your taxes and charges<br>New-order alerts<br>Daily, monthly and yearly summaries with printing</div><div class="sub" style="margin:8px 0 0">A Food Place with no tables (parcel only) starts at the first plan.</div></div>';
-  h+='<div class="cat">Plans and prices</div><div class="item" style="padding:6px 12px"><table style="width:100%;border-collapse:collapse;font-size:15px"><thead><tr style="text-align:right"><th style="text-align:left;padding:8px 0">Tables</th><th>Monthly</th><th>Yearly</th></tr></thead><tbody>'+SLABS.map(function(s,k){return '<tr style="text-align:right;border-top:1px solid var(--line)'+(k===cur?';font-weight:700':'')+'"><td style="text-align:left;padding:9px 0">'+s[0].replace(' tables','')+(k===cur?' <span class="tag">Yours</span>':'')+'</td><td>'+rs(s[2]*100)+'</td><td>'+rs(s[2]*1000)+'</td></tr>'}).join('')+'</tbody></table><div class="sub" style="margin:6px 0 4px">Yearly price is 10 months for 12: you get 2 months free. All prices include all taxes.</div></div>';
-  h+='<div class="note">Paying for your plan through Google Play will be added before the app is published. Until then nothing is charged.</div>';
+  var cur=n<=5?(p.plan_parcel===false?0:1):2;while(cur<6&&n>SLABS[cur][1])cur++;
+  var trialEnd=new Date(p.trial_ends_at),trialStart=new Date(trialEnd.getTime()-FREE_DAYS*86400000),dt={day:'numeric',month:'long',year:'numeric'};
+  var free=st==='trial'&&Date.now()<trialStart;
+  var h='<div class="cat">Your plan</div><div class="item"><b style="font-size:18px">';
+  if(free)h+='Free until '+trialStart.toLocaleDateString('en-IN',dt);
+  else if(st==='trial')h+='Free trial: '+days+' day'+(days===1?'':'s')+' left';
+  else h+='Plan: '+esc(st);
+  h+='</b>';
+  if(free)h+='<div class="sub" style="margin:4px 0 0">Everything in the app is free until '+trialStart.toLocaleDateString('en-IN',dt)+'. After that you get a '+FREE_DAYS+'-day free trial (until '+trialEnd.toLocaleDateString('en-IN',dt)+'), and then you choose a plan'+(cap?'. Up to '+cap+' tables now':'')+'.</div>';
+  else if(st==='trial')h+='<div class="sub" style="margin:4px 0 0">Trial ends on '+trialEnd.toLocaleDateString('en-IN',dt)+'. Everything in the app works during the trial'+(cap?', with up to '+cap+' tables':'')+'.</div>';
+  h+='<div class="sub" style="margin:8px 0 0">Your tables: <b>'+n+'</b>'+(n?'':' (parcel only)')+' · Plan for you: <b>'+SLABS[cur][0]+', '+rs(SLABS[cur][2]*100)+' a month, including all taxes</b></div>';
+  h+='</div><div class="cat">Included in every plan</div><div class="item"><div style="line-height:1.7">Dine-in orders with table QR codes<br>Parcel orders, pickup and home delivery<br>Saved customer addresses and delivery details<br>Bills with your taxes and charges<br>New-order alerts<br>Daily, monthly and yearly summaries with printing</div><div class="sub" style="margin:8px 0 0">A Food Place with no tables (parcel only) needs the plan with parcel. The dine-in only plan has no Parcel orders and is for 1 to 5 tables.</div></div>';
+  h+='<div class="cat">Plans and prices</div><div class="item" style="padding:6px 12px"><table style="width:100%;border-collapse:collapse;font-size:15px"><thead><tr style="text-align:right"><th style="text-align:left;padding:8px 0">Tables</th><th>Monthly</th><th>Yearly</th></tr></thead><tbody>'+SLABS.map(function(s,k){return '<tr style="text-align:right;border-top:1px solid var(--line)'+(k===cur?';font-weight:700':'')+'"><td style="text-align:left;padding:9px 0">'+s[0].replace(' tables','').replace(', dine-in only (no parcel)','<br><span class="sub" style="margin:0">dine-in only, no parcel</span>').replace(', with parcel','<br><span class="sub" style="margin:0">with parcel</span>')+(k===cur?' <span class="tag">Yours</span>':'')+'</td><td>'+rs(s[2]*100)+'</td><td>'+rs(s[2]*1000)+'</td></tr>'}).join('')+'</tbody></table><div class="sub" style="margin:6px 0 4px">Yearly price is 10 months for 12: you get 2 months free. All prices include all taxes.</div></div>';
+  h+='<div class="note">Paying for your plan through Google Play is being added. Until the free period ends nothing is charged.</div>';
   return h;
 }
 
@@ -3358,6 +3401,7 @@ function authView(){
   }else{
     h+='<label class="fl" for="rp" style="margin-top:0">Mobile number</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="rp" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" value="'+esc(f.phone)+'" oninput="dg(this,\'phone\',10)" autocomplete="tel-national"></div>';
   }
+  if(!reg)h+=bioLoginBtn();
   h+='<label class="fl" for="rw"'+(reg||!back?'':' style="margin-top:8px"')+'>'+(reg?'Create password or PIN':'Password or PIN')+'</label><input id="rw" class="t" type="password" placeholder="'+(reg?'At least 6 characters':'Your password or PIN')+'" value="'+esc(f.pw)+'" oninput="setL(\'pw\',this.value)" autocomplete="'+(reg?'new-password':'current-password')+'">';
   if(reg)h+='<label class="fl" for="rw2">Confirm password or PIN</label><input id="rw2" class="t" type="password" placeholder="Re-enter" value="'+esc(f.pw2)+'" oninput="setL(\'pw2\',this.value)" autocomplete="new-password">'
     +'<div class="cat" style="margin:14px -2px 0">Recovery code</div><div class="sub" style="margin:4px 0 0">If you forget your password, you can set a new one with your mobile number and this code, even without email. Choose something only you know, and write it down. Do not use your birth date or 1234.</div>'
@@ -3366,7 +3410,7 @@ function authView(){
   if(f.err)h+='<div class="err" role="alert">'+esc(f.err)+'</div>';
   h+='<button class="btn" style="width:100%;margin-top:16px"'+(S.busy?' disabled':'')+' onclick="'+(reg?'doRegister()':'doLogin()')+'">'+(S.busy?'Please wait…':reg?'Register':'Log in')+'</button>';
   if(back)h+='<button class="lnk" style="margin-top:10px" onclick="notMe()">Not '+esc(rm.n||'you')+'? Use another account</button>';
-  if(reg&&f.role==='o')h+='<div class="note" style="margin-top:12px">Your 15-day free trial starts after registration.</div>';
+  if(reg&&f.role==='o')h+='<div class="note" style="margin-top:12px">The app is free until 1 January 2027. After that you get a 15-day free trial, then you choose a plan.</div>';
   if(!reg)h+='<button class="lnk" style="margin-top:12px" onclick="fgOpen()">Forgot password or PIN?</button>';
   h+='</div><div class="sub" style="text-align:center;margin:4px 0 20px">'+(reg?'By registering you agree to our ':'')+legalLinks()+'</div>';
   return h;
@@ -3499,6 +3543,7 @@ function accountHtml(){
     if(S.hasRec===true)h+='<label class="fl" for="acp">Your current password</label><input id="acp" class="t" type="password" autocomplete="current-password" value="'+esc(A.cp)+'" oninput="A.cp=this.value">';
     h+='<label class="fl" for="ar1">New recovery code</label><input id="ar1" class="t" type="password" placeholder="At least 6 characters" autocomplete="off" autocapitalize="none" value="'+esc(A.rc)+'" oninput="A.rc=this.value"><label class="fl" for="ar2">Confirm recovery code</label><input id="ar2" class="t" type="password" placeholder="Re-enter" autocomplete="off" autocapitalize="none" value="'+esc(A.rc2)+'" oninput="A.rc2=this.value"><div class="row" style="margin-top:8px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="accSaveRec()">'+(S.busy?'Please wait…':'Save recovery code')+'</button><button class="btn ghost sp" onclick="accCancel()">Cancel</button></div>';
   }
+  h+=bioRow();
   if(A.err)h+='<div class="err" role="alert">'+esc(A.err)+'</div>';
   return h+'</div>';
 }
@@ -3511,6 +3556,7 @@ function render(){
   if(!S.prof){AP.className='';AP.innerHTML=F.on?forgotView():authView();afterRender();return}
   if(S.needEmail){AP.className='';AP.innerHTML=hdr()+verifyView();return}
   if(S.needRec){AP.className='';AP.innerHTML=hdr()+recView();return}
+  if(S.needBio){AP.className='';AP.innerHTML=hdr()+bioView();return}
   var h=hdr(),nav=true,bar=false;
   if(S.prof.role==='owner'&&!O.needPlace){h+=alBanner();alWake();alBg()}
   if(S.prof.role==='owner'){
@@ -3532,7 +3578,7 @@ function afterRender(){
 var lastSig='';
 function typing(){var a=document.activeElement;return a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.tagName==='SELECT')}
 async function poll(){
-  if(!S.prof||S.busy||S.needEmail||S.needRec)return;
+  if(!S.prof||S.busy||S.needEmail||S.needRec||S.needBio)return;
   if(document.hidden&&S.prof.role!=='owner')return;
   try{
     if(S.prof.role==='owner'&&!O.needPlace&&O.tab==='orders'){await Promise.all([loadOrders(),fetchPlaceRow()]);var ch=alCheck(O.orders);var s=JSON.stringify([O.orders,O.place.is_open,alCount()]);if(s!==lastSig||ch){lastSig=s;if(!typing())render()}}
@@ -3621,6 +3667,7 @@ function addrHtml(mode){
   if(AD.err&&!AD.f)h+='<div class="err" role="alert">'+esc(AD.err)+'</div>';
   return h;
 }
+function cancelOrder(){act(async function(){await rpc('customer_cancel_order',{p_order:C.order.id});C.cxl='';await fetchOrder(C.order.id);toast('Order cancelled.',true)})}
 function confirmDelivery(){act(async function(){await rpc('customer_confirm_delivery',{p_order:C.order.id});await fetchOrder(C.order.id);window.scrollTo(0,0);toast('Thank you. Receipt confirmed.',true)})}
 
 /* ---------- summaries (owner and customer) with print ---------- */
@@ -4016,7 +4063,7 @@ var LEGAL={
     "Food Place owners",
     [
      "You must have the right to run the Food Place you register and you are responsible for the accuracy of your menu, prices, other taxes, charges and bills. Bills made in the app are a convenience and do not replace your own legal and tax duties.",
-     "Subscription: a free trial of 15 days, then a monthly or yearly plan based on your number of tables. A Food Place with no tables (parcel only) starts at the first plan. Every plan includes dine-in, parcel, home delivery and reports. Prices and plans are shown in the app and may change with notice. Payments for plans will be collected through Google Play once available.",
+     "Subscription: free until 1 January 2027, then a free trial of 15 days, then a monthly or yearly plan based on your number of tables. There is a dine-in only plan (no parcel orders) for 1 to 5 tables; all other plans include dine-in, parcel, home delivery and reports. Prices and plans are shown in the app and may change with notice. Payments for plans will be collected through Google Play once available.",
      "You must confirm UPI, card and cash payments honestly and give customers what they ordered."
     ]
    ],
@@ -4097,301 +4144,305 @@ function legalSettingsHtml(){
 }
 /* ---- Help & user guide ---- */
 var GUIDE={
- "customer": [
-  {
-   "t": "Register and log in",
-   "w": "Create your account once. After that you log in with your mobile number and password.",
-   "s": [
-    "Open the app and tap Register, then choose Customer.",
-    "Enter your name, 10-digit mobile number and a password or PIN (at least 6 characters). The email is optional: leave it empty if you have none.",
-    "Choose a recovery code (at least 6 characters, only you know it) and write it down. You need it to reset a forgotten password if you have no email.",
-    "Tap Register. If you added an email, we email a 6-digit code. Type it in and tap Verify. With no email, you go straight in.",
-    "Next time, log in with your mobile number and password. The app remembers you, so you only type the password.",
-    "Forgot your password? Tap Forgot password or PIN on the login page. Choose By email (type the 6-digit code we email) or With recovery code (enter your mobile number and your recovery code). Then choose a new password."
-   ],
-   "n": [
-    "If you add an email, it is verified by the code. Your mobile number is not checked by SMS, so please type it correctly. After 5 wrong recovery code tries, the reset is locked for an hour."
-   ],
-   "shot": "c_login"
-  },
-  {
-   "t": "Find a Food Place",
-   "w": "Restaurants, hotels, nashta centres and dhabas are called Food Places. Each has a short code.",
-   "s": [
-    "Open the Order tab.",
-    "Type the name or code of the Food Place in the search box, or tap Scan table QR code if you are at the Food Place.",
-    "Tap the Food Place to open its menu. Its address and mobile number are together in one card, with Open in Maps and tap-to-call."
-   ],
-   "n": [
-    "If the Food Place shows Closed now, it is not taking orders right now."
-   ],
-   "shot": "c_find"
-  },
-  {
-   "t": "Order at your table (dine-in)",
-   "w": "Scan the QR on your table, order, and pay after you are served.",
-   "s": [
-    "Tap Scan table QR code in the app and point the camera at the QR on your table. You will see Table verified by QR. You can also scan the QR with your phone's normal camera: it opens MyFoodBill in your browser, log in and your table opens.",
-    "At the top, keep Table selected. Use All, Veg and Non-veg to filter the menu. These buttons stay on top while you scroll.",
-    "Tap + on the dishes you want. Dishes with a half plate show Full and Half prices.",
-    "Tap View cart, check the bill and tap Place order.",
-    "Note your Token number. Show it if the staff ask."
-   ],
-   "n": [
-    "You can order again for the same table while you are eating. Each order gets its own token."
-   ],
-   "shot": "c_menu"
-  },
-  {
-   "t": "Order a parcel: pickup or delivery",
-   "w": "Order from anywhere. You pay first, then the Food Place accepts your order.",
-   "s": [
-    "Open the Food Place and choose Parcel at the top.",
-    "Add your dishes and tap View cart.",
-    "Choose Pick up myself (collect at the Food Place) or Deliver to me. Delivery is offered only if the Food Place delivers.",
-    "For delivery, pick a saved address or add a new one. A delivery charge is added to the bill.",
-    "Choose how to pay: Pay online (UPI), Card or Cash, then tap Place parcel order. The owner confirms your payment and accepts the order."
-   ],
-   "n": [
-    "Save your addresses once in Settings > Addresses and choose them in a tap next time."
-   ],
-   "shot": "c_cart"
-  },
-  {
-   "t": "Track your order",
-   "w": "The order page shows every step, with date and time.",
-   "s": [
-    "After you order, the order page opens by itself. Later, open My orders and tap the order.",
-    "Watch the status: Waiting for acceptance, Accepted, Preparing, then Ready or Out for delivery.",
-    "When your parcel arrives or you collect it, tap I have received my delivery (or I have collected my parcel). This records the delivery date and time for the owner.",
-    "Delivery orders also show who delivered, when the Food Place used a name or code for the delivery person."
-   ],
-   "n": [
-    "If the Food Place does not accept an order, it shows Not accepted and you pay nothing."
-   ],
-   "shot": "c_track"
-  },
-  {
-   "t": "Pay for your order",
-   "w": "Dine-in: pay after you are served. Parcel: pay when you place the order.",
-   "s": [
-    "Open your order and tap Pay online, Card or Cash.",
-    "Pay online (UPI) opens your UPI app, such as Google Pay or PhonePe, on your phone. Finish the payment, come back and tap I have paid.",
-    "For Card or Cash, pay at the counter.",
-    "The owner checks the payment and confirms it. Your order then shows a green Paid."
-   ],
-   "n": [
-    "A payment counts only after the owner confirms it."
-   ],
-   "shot": "c_pay"
-  },
-  {
-   "t": "My orders",
-   "w": "All your orders in one place.",
-   "s": [
-    "Open the My orders tab.",
-    "Use Sort by: Latest first, or Food Place code to group your orders by Food Place.",
-    "Tap an order to see its bill with items, prices, taxes and charges."
-   ],
-   "n": [
-    "The Sort by buttons stay on top while you scroll."
-   ],
-   "shot": "c_hist"
-  },
-  {
-   "t": "Summary and printing",
-   "w": "See what you have spent by day, month or year.",
-   "s": [
-    "Open the Summary tab.",
-    "Choose Daily, Monthly or Yearly and pick the date.",
-    "Tap Print. Each page has the MyFoodBill logo and name, the title, the date printed and Page n of N."
-   ],
-   "shot": "c_sum"
-  },
-  {
-   "t": "Settings: account, addresses and feedback",
-   "w": "Everything about you is under Settings.",
-   "s": [
-    "Account: see your name, mobile number and email. Change your mobile number, or add or change your email here (an email needs a 6-digit code). You can also set or change your recovery code here (you need your current password to change it).",
-    "Addresses: add, edit and delete delivery addresses and choose a default.",
-    "Feedback: tell us if you are happy. If yes, you can write a review on Google Play. If not, send us a private message.",
-    "Privacy Policy and Terms of Use are in the Account tab.",
-    "Delete my account: type DELETE to remove your login and addresses. Your name and number are removed from past orders."
-   ],
-   "n": [
-    "You cannot delete your account while an order is still open."
-   ],
-   "shot": "c_set"
-  }
- ],
- "owner": [
-  {
-   "t": "Register your Food Place",
-   "w": "Create the owner account for your restaurant, hotel, nashta centre or dhaba.",
-   "s": [
-    "Tap Register and choose Owner.",
-    "Enter your name, Food Place name, mobile number, a password and a recovery code. Email is optional; if you add one, verify the 6-digit code we email you.",
-    "You get a short Food Place code. Customers use it to find you.",
-    "Your 15-day free trial starts now, with up to 10 tables."
-   ],
-   "n": [
-    "Forgot your password? Use Forgot password or PIN on the login page: By email, or With recovery code (mobile number plus your recovery code)."
-   ],
-   "shot": "o_orders"
-  },
-  {
-   "t": "Set up your Food Place",
-   "w": "Settings > Food Place controls how you take orders. Each part has its own card.",
-   "s": [
-    "Accepting orders: switch off to stop all new orders.",
-    "Home delivery: switch on if you deliver parcels, and set the Delivery charge (0 for free delivery).",
-    "Opening hours: orders are accepted only between your opening and closing time.",
-    "Contact number, Address and PIN code: customers see these together in one card on your menu page.",
-    "Online payments (UPI): add your UPI ID for parcel payments."
-   ],
-   "n": [
-    "Your address is shown to customers on the menu and printed on your reports."
-   ],
-   "shot": "o_set"
-  },
-  {
-   "t": "Build your menu",
-   "w": "The Menu tab has two parts: Menu and Add item.",
-   "s": [
-    "Fastest way: open Menu > Add item > Scan your menu card. Take a clear photo of your printed menu with your camera app. Choose the language on the menu card (English, Marathi and Hindi together is the default), then tap Choose menu photo and pick it. This needs internet. The first time it downloads the language readers, so it takes a minute or two.",
-    "Check the list it reads. Fix any name or price, set Veg or Non-veg, remove lines you do not want, choose a category, and tap Save all items.",
-    "Or add one dish yourself: type the item name, choose a category, Veg or Non-veg, the Full price and, if you have it, the Half price. Tap Save item.",
-    "Tap Menu to see all your items by category. Change a price in the box, or turn an item off with the Available switch when it is sold out.",
-    "To change anything else about a dish (name, category, Veg or Non-veg, Full or Half price, note), tap Edit on that item. A separate page opens. Change what you need and tap Save changes. You can also delete the item from that page.",
-    "Add or remove categories at the end of the Menu list."
-   ],
-   "n": [
-    "If your menu is on a computer or phone screen, take a screenshot and scan that. A photo of a screen reads badly because of the screen dots and glare. Lines the app cannot read clearly are not listed.",
-    "Always check scanned names and prices before saving. Clear, straight photos in good light read best. Handwritten menus and fancy fonts need more fixing. If you only have English on the card, choose English only for a faster scan.",
-    "Prices are checked again on the server for every order, so customers cannot change them."
-   ],
-   "shot": "o_additem"
-  },
-  {
-   "t": "Tables and QR codes",
-   "w": "Each table has its own QR code. Customers can order at a table only after scanning it.",
-   "s": [
-    "Open the Tables tab. The box at the top (add table and print) stays in view while you scroll.",
-    "Add tables by number or name. Your plan decides how many tables you can add.",
-    "Tap Print all QR codes and stick one on each table.",
-    "If a QR code is lost or misused, make a new one for that table and replace the sticker."
-   ],
-   "n": [
-    "A Food Place with no tables can still take parcel orders."
-   ],
-   "shot": "o_tables"
-  },
-  {
-   "t": "Taxes, charges and packing",
-   "w": "Settings > Bills sets what is added to every bill.",
-   "s": [
-    "Bill charges: set taxes such as CGST and SGST, or a service charge, as a percentage. Turn them on or off.",
-    "Add other taxes with their own name and percentage.",
-    "Packing charges: set a charge for parcel orders.",
-    "The order card and the bill show the subtotal, each tax and charge, and the total."
-   ],
-   "shot": "o_bills"
-  },
-  {
-   "t": "Receive and serve orders",
-   "w": "The Orders tab is your live order list.",
-   "s": [
-    "When an order arrives you hear a sound, and a red banner appears. Tap it to open Orders.",
-    "Open the order and tap Accept or Reject. For parcel orders, confirm the payment first.",
-    "Move the order along: Mark preparing, then Mark served (dine-in), Mark ready for pickup, or Mark out for delivery and Mark delivered.",
-    "For delivery, type who is delivering in Delivered by (a name or code). You can see the customer address, and the delivery date and time.",
-    "When a customer pays, tap Confirm payment received. Use the Status and payment buttons at the top to filter orders."
-   ],
-   "n": [
-    "Dine-in customers pay after they are served. Parcel customers pay first."
-   ],
-   "shot": "o_orders"
-  },
-  {
-   "t": "New-order alerts",
-   "w": "Settings > Alerts makes sure you never miss an order.",
-   "s": [
-    "Sound and vibration: on by default. Tap Test sound to check it.",
-    "Keep the screen on: stops the phone from sleeping while the app is open.",
-    "Allow notifications if you want a message when the app is in the background."
-   ],
-   "n": [
-    "Alerts work while the app is open. Keep it open at the counter. Alerts when the app is closed come with the Android app."
-   ],
-   "shot": "o_alerts"
-  },
-  {
-   "t": "Summary and printing",
-   "w": "See your sales by day, month or year.",
-   "s": [
-    "Open the Summary tab.",
-    "Choose Daily, Monthly or Yearly and pick the date.",
-    "See orders, food sales, each tax and charge, and total paid. The monthly view shows each day and the yearly view each month.",
-    "Tap Print. Every page has the MyFoodBill logo, your Food Place name and address, the title, the date and Page n of N."
-   ],
-   "shot": "o_sum"
-  },
-  {
-   "t": "Subscription",
-   "w": "Settings > Subscription shows your trial and plan.",
-   "s": [
-    "See how many trial days are left and which plan fits your number of tables.",
-    "Plans per month: 1 to 5 tables ₹600, 6 to 10 ₹1,200, 11 to 25 ₹2,400, 26 to 50 ₹3,600, 51 to 100 ₹4,800, more than 100 ₹6,000. All prices include all taxes.",
-    "Yearly price is 10 times the monthly price, so you get 2 months free.",
-    "Every plan includes dine-in, parcel, home delivery, addresses, bills, alerts and summaries."
-   ],
-   "n": [
-    "Payment through Google Play is added before the app is published. Until then nothing is charged."
-   ],
-   "shot": "o_sub"
-  },
-  {
-   "t": "Your account",
-   "w": "Settings > Account.",
-   "s": [
-    "Change your mobile number or email.",
-    "Send us comments or suggestions in Feedback.",
-    "Read the Privacy Policy and Terms of Use.",
-    "Delete my account removes your Food Place, menu, tables and all orders for ever. Print your summaries first, and finish or reject open orders."
-   ],
-   "shot": "o_acc"
-  }
- ],
- "faq": [
-  [
-   "I forgot my password.",
-   "Tap Forgot password or PIN on the login page. Choose By email to get a 6-digit code, or With recovery code and enter your mobile number and the recovery code you chose. No email and no code? Write to {EMAIL}."
+  "customer": [
+    {
+      "t": "Register and log in",
+      "w": "Create your account once. After that you log in with your mobile number and password.",
+      "s": [
+        "Open the app and tap Register, then choose Customer.",
+        "Enter your name, 10-digit mobile number and a password or PIN (at least 6 characters). The email is optional: leave it empty if you have none.",
+        "Choose a recovery code (at least 6 characters, only you know it) and write it down. You need it to reset a forgotten password if you have no email.",
+        "Tap Register. If you added an email, we email a 6-digit code. Type it in and tap Verify. With no email, you go straight in.",
+        "Next time, log in with your mobile number and password. The app remembers you, so you only type the password.",
+        "Forgot your password? Tap Forgot password or PIN on the login page. Choose By email (type the 6-digit code we email) or With recovery code (enter your mobile number and your recovery code). Then choose a new password."
+      ],
+      "n": [
+        "If you add an email, it is verified by the code. Your mobile number is not checked by SMS, so please type it correctly. After 5 wrong recovery code tries, the reset is locked for an hour."
+      ],
+      "shot": "c_login"
+    },
+    {
+      "t": "Find a Food Place",
+      "w": "Restaurants, hotels, nashta centres and dhabas are called Food Places. Each has a short code.",
+      "s": [
+        "Open the Order tab.",
+        "Type the name or code of the Food Place in the search box, or tap Scan table QR code if you are at the Food Place.",
+        "Tap the Food Place to open its menu. Its address and mobile number are together in one card, with Open in Maps and tap-to-call."
+      ],
+      "n": [
+        "If the Food Place shows Closed now, it is not taking orders right now."
+      ],
+      "shot": "c_find"
+    },
+    {
+      "t": "Order at your table (dine-in)",
+      "w": "Scan the QR on your table, order, and pay after you are served.",
+      "s": [
+        "Tap Scan table QR code in the app and point the camera at the QR on your table. You will see Table verified by QR. You can also scan the QR with your phone's normal camera: it opens MyFoodBill in your browser, log in and your table opens.",
+        "At the top, keep Table selected. Use All, Veg and Non-veg to filter the menu. These buttons stay on top while you scroll.",
+        "Tap + on the dishes you want. Dishes with a half plate show Full and Half prices.",
+        "Tap View cart, check the bill and tap Place order.",
+        "Note your Token number. Show it if the staff ask."
+      ],
+      "n": [
+        "You can order again for the same table while you are eating. Each order gets its own token."
+      ],
+      "shot": "c_menu"
+    },
+    {
+      "t": "Order a parcel: pickup or delivery",
+      "w": "Order from anywhere. You pay first, then the Food Place accepts your order.",
+      "s": [
+        "Open the Food Place and choose Parcel at the top.",
+        "Add your dishes and tap View cart.",
+        "Choose Pick up myself (collect at the Food Place) or Deliver to me. Delivery is offered only if the Food Place delivers.",
+        "For delivery, pick a saved address or add a new one. A delivery charge is added to the bill.",
+        "Choose how to pay: Pay online (UPI), Card or Cash, then tap Place parcel order. The owner confirms your payment and accepts the order.",
+        "Paying online: copy the UPI ID and pay it from PhonePe, Google Pay or Paytm, or scan the QR code shown below it (with another phone, or take a screenshot and in your UPI app choose Scan QR, then pick the screenshot; you can tap Save QR to gallery). The amount is already filled in the QR. You can also tap Open my UPI app to pay. After paying, type the transaction ID (UTR) in the box and place the order."
+      ],
+      "n": [
+        "Save your addresses once in Settings > Addresses and choose them in a tap next time.",
+        "A UPI app may warn about a payment to a personal UPI ID. If that happens, tap Copy and pay to the UPI ID from your UPI app, or use the QR code. Both work."
+      ],
+      "shot": "c_cart"
+    },
+    {
+      "t": "Track your order",
+      "w": "The order page shows every step, with date and time.",
+      "s": [
+        "After you order, the order page opens by itself. Later, open My orders and tap the order.",
+        "Watch the status: Waiting for acceptance, Accepted, Preparing, then Ready or Out for delivery.",
+        "When your parcel arrives or you collect it, tap I have received my delivery (or I have collected my parcel). This shows a big green confirmation card at the top of your screen with the token, your name and the time, so the delivery person can see it on your phone. The owner also sees the delivery date and time.",
+        "Delivery orders also show who delivered, when the Food Place used a name or code for the delivery person."
+      ],
+      "n": [
+        "If the Food Place does not accept an order, it shows Not accepted and you pay nothing."
+      ],
+      "shot": "c_track"
+    },
+    {
+      "t": "Pay for your order",
+      "w": "Dine-in: pay after you are served. Parcel: pay when you place the order.",
+      "s": [
+        "Open your order and tap Pay online, Card or Cash.",
+        "Pay online (UPI) opens your UPI app, such as Google Pay or PhonePe, on your phone. Finish the payment, come back and tap I have paid.",
+        "For Card or Cash, pay at the counter.",
+        "The owner checks the payment and confirms it. Your order then shows a green Paid."
+      ],
+      "n": [
+        "A payment counts only after the owner confirms it."
+      ],
+      "shot": "c_pay"
+    },
+    {
+      "t": "My orders",
+      "w": "All your orders in one place.",
+      "s": [
+        "Open the My orders tab.",
+        "Use Sort by: Latest first, or Food Place code to group your orders by Food Place.",
+        "Tap an order to see its bill with items, prices, taxes and charges."
+      ],
+      "n": [
+        "The Sort by buttons stay on top while you scroll."
+      ],
+      "shot": "c_hist"
+    },
+    {
+      "t": "Summary and printing",
+      "w": "See what you have spent by day, month or year.",
+      "s": [
+        "Open the Summary tab.",
+        "Choose Daily, Monthly or Yearly and pick the date.",
+        "Tap Print. Each page has the MyFoodBill logo and name, the title, the date printed and Page n of N."
+      ],
+      "shot": "c_sum"
+    },
+    {
+      "t": "Settings: account, addresses and feedback",
+      "w": "Everything about you is under Settings.",
+      "s": [
+        "Account: see your name, mobile number and email. Change your mobile number, or add or change your email here (an email needs a 6-digit code). You can also set or change your recovery code here (you need your current password to change it).",
+        "Fingerprint login (Android app): turn it on or off here. When it is on, the login page shows a Log in with fingerprint button, so you can log in without typing your password. Your password is never stored, and the app stays open until you log out.",
+        "Addresses: add, edit and delete delivery addresses and choose a default.",
+        "Feedback: tell us if you are happy. If yes, you can write a review on Google Play. If not, send us a private message.",
+        "Privacy Policy and Terms of Use are in the Account tab.",
+        "Delete my account: type DELETE to remove your login and addresses. Your name and number are removed from past orders."
+      ],
+      "n": [
+        "You cannot delete your account while an order is still open."
+      ],
+      "shot": "c_set"
+    }
   ],
-  [
-   "My code did not arrive.",
-   "Check your spam folder, wait a minute and tap Send a new code."
+  "owner": [
+    {
+      "t": "Register your Food Place",
+      "w": "Create the owner account for your restaurant, hotel, nashta centre or dhaba.",
+      "s": [
+        "Tap Register and choose Owner.",
+        "Enter your name, Food Place name, mobile number, a password and a recovery code. Email is optional; if you add one, verify the 6-digit code we email you.",
+        "You get a short Food Place code. Customers use it to find you.",
+        "The app is free until 1 January 2027. After that you get a 15-day free trial, then you choose a plan."
+      ],
+      "n": [
+        "Forgot your password? Use Forgot password or PIN on the login page: By email, or With recovery code (mobile number plus your recovery code)."
+      ],
+      "shot": "o_orders"
+    },
+    {
+      "t": "Set up your Food Place",
+      "w": "Settings > Food Place controls how you take orders. Each part has its own card.",
+      "s": [
+        "Accepting orders: switch off to stop all new orders.",
+        "Home delivery: switch on if you deliver parcels, and set the Delivery charge (0 for free delivery).",
+        "Opening hours: orders are accepted only between your opening and closing time.",
+        "Contact number, Address and PIN code: customers see these together in one card on your menu page.",
+        "Online payments (UPI): add your UPI ID for parcel payments. Use your business UPI ID if you have one: personal accounts may show warnings or limits to customers."
+      ],
+      "n": [
+        "Your address is shown to customers on the menu and printed on your reports."
+      ],
+      "shot": "o_set"
+    },
+    {
+      "t": "Build your menu",
+      "w": "The Menu tab has two parts: Menu and Add item.",
+      "s": [
+        "Fastest way: open Menu > Add item > Scan your menu card. Take a clear photo of your printed menu with your camera app. Choose the language on the menu card (English, Marathi and Hindi together is the default), then tap Choose menu photo and pick it. This needs internet. The first time it downloads the language readers, so it takes a minute or two.",
+        "Check the list it reads. Fix any name or price, set Veg or Non-veg, remove lines you do not want, choose a category, and tap Save all items.",
+        "Or add one dish yourself: type the item name, choose a category, Veg or Non-veg, the Full price and, if you have it, the Half price. Tap Save item.",
+        "Tap Menu to see all your items by category. Change a price in the box, or turn an item off with the Available switch when it is sold out.",
+        "To change anything else about a dish (name, category, Veg or Non-veg, Full or Half price, note), tap Edit on that item. A separate page opens. Change what you need and tap Save changes. You can also delete the item from that page.",
+        "Add or remove categories at the end of the Menu list."
+      ],
+      "n": [
+        "The free scanner reads most dishes of a clear printed menu. It may miss a few, and the rupee sign can be misread as a digit, so rows marked Please check this price need a look. Dishes read without a price are listed in an orange box so you can add them with Add item.",
+        "If your menu is on a computer or phone screen, take a screenshot and scan that. A photo of a screen reads badly because of the screen dots and glare. Lines the app cannot read clearly are not listed.",
+        "Always check scanned names and prices before saving. Clear, straight photos in good light read best. Handwritten menus and fancy fonts need more fixing. If you only have English on the card, choose English only for a faster scan.",
+        "Prices are checked again on the server for every order, so customers cannot change them."
+      ],
+      "shot": "o_additem"
+    },
+    {
+      "t": "Tables and QR codes",
+      "w": "Each table has its own QR code. Customers can order at a table only after scanning it.",
+      "s": [
+        "Open the Tables tab. The box at the top (add table and print) stays in view while you scroll.",
+        "Add tables by number or name. Your plan decides how many tables you can add.",
+        "Each QR shows the date and time it was created. Tap Print all QR codes and stick one on each table; the printed page also shows the date and time of printing.",
+        "If a QR code is lost or misused, make a new one for that table and replace the sticker."
+      ],
+      "n": [
+        "A Food Place with no tables can still take parcel orders."
+      ],
+      "shot": "o_tables"
+    },
+    {
+      "t": "Taxes, charges and packing",
+      "w": "Settings > Bills sets what is added to every bill.",
+      "s": [
+        "Bill charges: set taxes such as CGST and SGST, or a service charge, as a percentage. Turn them on or off.",
+        "Add other taxes with their own name and percentage.",
+        "Packing charges: set a charge for parcel orders.",
+        "The order card and the bill show the subtotal, each tax and charge, and the total."
+      ],
+      "shot": "o_bills"
+    },
+    {
+      "t": "Receive and serve orders",
+      "w": "The Orders tab is your live order list.",
+      "s": [
+        "When an order arrives you hear a sound, and a red banner appears. Tap it to open Orders.",
+        "Open the order and tap Accept or Reject. For parcel orders, confirm the payment first.",
+        "Move the order along: Mark preparing, then Mark served (dine-in), Mark ready for pickup, or Mark out for delivery and Mark delivered.",
+        "For delivery, type who is delivering in Delivered by (a name or code). You can see the customer address, and the delivery date and time.",
+        "When a customer pays, tap Confirm payment received. Use the Status and payment buttons at the top to filter orders."
+      ],
+      "n": [
+        "Dine-in customers pay after they are served. Parcel customers pay first."
+      ],
+      "shot": "o_orders"
+    },
+    {
+      "t": "New-order alerts",
+      "w": "Settings > Alerts makes sure you never miss an order.",
+      "s": [
+        "Sound and vibration: on by default. Tap Test sound to check it.",
+        "Keep the screen on: stops the phone from sleeping while the app is open.",
+        "Allow notifications if you want a message when the app is in the background."
+      ],
+      "n": [
+        "Alerts work while the app is open. Keep it open at the counter. Alerts when the app is closed come with the Android app."
+      ],
+      "shot": "o_alerts"
+    },
+    {
+      "t": "Summary and printing",
+      "w": "See your sales by day, month or year.",
+      "s": [
+        "Open the Summary tab.",
+        "Choose Daily, Monthly or Yearly and pick the date.",
+        "See orders, food sales, each tax and charge, and total paid. The monthly view shows each day and the yearly view each month.",
+        "Tap Print. Every page has the MyFoodBill logo, your Food Place name and address, the title, the date and Page n of N."
+      ],
+      "shot": "o_sum"
+    },
+    {
+      "t": "Subscription",
+      "w": "Settings > Subscription shows your trial and plan.",
+      "s": [
+        "See how long the app is free, when your 15-day trial ends and which plan fits your number of tables.",
+        "Plans per month: 1 to 5 tables ₹700 (dine-in only, no parcel) or ₹1,000 (with parcel), 6 to 10 ₹2,000, 11 to 25 ₹4,000, 26 to 50 ₹6,000, 51 to 100 ₹8,000, more than 100 ₹10,000. All prices include all taxes.",
+        "Yearly price is 10 times the monthly price, so you get 2 months free.",
+        "Every plan includes dine-in, bills, alerts and summaries. All plans except the dine-in only plan also include parcel and home delivery."
+      ],
+      "n": [
+        "Payment through Google Play is being added. Nothing is charged until the free period ends."
+      ],
+      "shot": "o_sub"
+    },
+    {
+      "t": "Your account",
+      "w": "Settings > Account.",
+      "s": [
+        "Change your mobile number or email.",
+        "Send us comments or suggestions in Feedback.",
+        "Read the Privacy Policy and Terms of Use.",
+        "Delete my account removes your Food Place, menu, tables and all orders for ever. Print your summaries first, and finish or reject open orders."
+      ],
+      "shot": "o_acc"
+    }
   ],
-  [
-   "I cannot find a Food Place.",
-   "Check the name or code. The Food Place may also be switched off for orders."
-  ],
-  [
-   "Can I cancel an order?",
-   "Ask the Food Place. Only the owner can accept or reject orders."
-  ],
-  [
-   "The sound does not play for new orders.",
-   "Tap anywhere on the screen once after opening the app, then tap Test sound in Settings > Alerts. Check that your phone is not on silent."
-  ],
-  [
-   "How do I get help?",
-   "Write to us at {EMAIL}."
-  ],
-  [
-   "Can I use MyFoodBill on a computer?",
-   "Yes. Open https://myfoodbill-app.github.io/myfoodbill/ in Chrome or Edge and log in with the same mobile number and password. On a wide screen the app shows a side menu and wider pages. Owners can copy this link from Settings > Account > Use on a computer."
+  "faq": [
+    [
+      "I forgot my password.",
+      "Tap Forgot password or PIN on the login page. Choose By email to get a 6-digit code, or With recovery code and enter your mobile number and the recovery code you chose. No email and no code? Write to {EMAIL}."
+    ],
+    [
+      "My code did not arrive.",
+      "Check your spam folder, wait a minute and tap Send a new code."
+    ],
+    [
+      "I cannot find a Food Place.",
+      "Check the name or code. The Food Place may also be switched off for orders."
+    ],
+    [
+      "Can I cancel an order?",
+      "Yes, but only while the Food Place has not accepted it and nothing has been paid. Open the order and tap Cancel order, then confirm. Once you have paid, or the Food Place has accepted the order, the button disappears. Please call the Food Place to cancel it or ask for a refund; the phone number is on the order screen."
+    ],
+    [
+      "The sound does not play for new orders.",
+      "Tap anywhere on the screen once after opening the app, then tap Test sound in Settings > Alerts. Check that your phone is not on silent."
+    ],
+    [
+      "How do I get help?",
+      "Write to us at {EMAIL}."
+    ],
+    [
+      "Can I use MyFoodBill on a computer?",
+      "Yes. Open https://myfoodbill-app.github.io/myfoodbill/ in Chrome or Edge and log in with the same mobile number and password. On a wide screen the app shows a side menu and wider pages. Owners can copy this link from Settings > Account > Use on a computer."
+    ]
   ]
- ]
 };
 var HLP={on:false,tab:'',open:-1};
 function helpOpen(){HLP.on=true;HLP.tab=S.prof?(S.prof.role==='owner'?'owner':'customer'):'customer';HLP.open=-1;window.scrollTo(0,0);render()}
@@ -4421,13 +4472,40 @@ function helpView(){
 var MSL=[['eng+mar+hin','English, Marathi and Hindi'],['eng','English only (fastest)'],['eng+mar','English and Marathi'],['eng+hin','English and Hindi']];
 var MS={st:'',pct:0,ph:'',rows:[],err:'',cat:'',raw:'',lang:(function(){try{var v=localStorage.getItem('mfbMsLang');if(MSL.some(function(x){return x[0]===v}))return v}catch(e){}return 'eng+mar+hin'})()};
 function msLang(v){MS.lang=v;try{localStorage.setItem('mfbMsLang',v)}catch(e){}}
+function msDots(gr,w,h){
+  /* remove dotted leader lines (.......) between a dish name and its price: they confuse the reader */
+  try{
+    var N=w*h,lab=new Int32Array(N),par=new Int32Array((N>>1)+2),n=0,x,y,i,a,b,ra,rb;
+    var find=function(v){while(par[v]!==v){par[v]=par[par[v]];v=par[v]}return v};
+    for(y=0;y<h;y++)for(x=0;x<w;x++){
+      i=y*w+x;if(gr[i]>175)continue;
+      a=x>0?lab[i-1]:0;b=y>0?lab[i-w]:0;
+      if(!a&&!b){n++;if(n>=par.length)return;par[n]=n;lab[i]=n}
+      else if(a&&!b)lab[i]=a;else if(!a&&b)lab[i]=b;
+      else{ra=find(a);rb=find(b);if(ra!==rb){if(ra<rb)par[rb]=ra;else par[ra]=rb}lab[i]=ra<rb?ra:rb}
+    }
+    var mnx=new Int32Array(n+1).fill(1e9),mxx=new Int32Array(n+1).fill(-1),mny=new Int32Array(n+1).fill(1e9),mxy=new Int32Array(n+1).fill(-1),ar=new Int32Array(n+1),r;
+    for(y=0;y<h;y++)for(x=0;x<w;x++){i=y*w+x;if(!lab[i])continue;r=find(lab[i]);lab[i]=r;if(x<mnx[r])mnx[r]=x;if(x>mxx[r])mxx[r]=x;if(y<mny[r])mny[r]=y;if(y>mxy[r])mxy[r]=y;ar[r]++}
+    var hs=[],k;for(k=1;k<=n;k++){if(par[k]!==k||!ar[k])continue;var bh=mxy[k]-mny[k]+1;if(bh>=6&&ar[k]>=20&&bh<h*0.1)hs.push(bh)}
+    if(hs.length<20)return;hs.sort(function(p,q){return p-q});var Hm=hs[hs.length>>1];if(Hm<10)return;
+    var lim=Hm*0.32,cand=[];
+    for(k=1;k<=n;k++){if(par[k]!==k||!ar[k])continue;var bw=mxx[k]-mnx[k]+1,bh2=mxy[k]-mny[k]+1;if(bw<=lim&&bh2<=lim&&ar[k]>=2)cand.push([(mny[k]+mxy[k])/2,k])}
+    cand.sort(function(p,q){return p[0]-q[0]});
+    var rem=new Uint8Array(n+1),c0=0,j;
+    while(c0<cand.length){j=c0;while(j<cand.length&&cand[j][0]-cand[c0][0]<=Hm*0.2)j++;
+      if(j-c0>=8)for(k=c0;k<j;k++)rem[cand[k][1]]=1;
+      c0=j}
+    for(i=0;i<N;i++){if(lab[i]&&rem[lab[i]])gr[i]=255}
+  }catch(e){}
+}
 function msPrep(f){
   /* clean the photo for reading: right size, grey, stronger contrast; falls back to the original file */
   return (async function(){
     try{
       var bmp=window.createImageBitmap?await createImageBitmap(f):null;if(!bmp)return f;
       var w=bmp.width,h=bmp.height,sc=1,big=Math.max(w,h);
-      if(big>2600)sc=2600/big;else if(w<1400)sc=Math.min(2,1600/w);
+      /* tall phone photos: keep the width near 1600 px so small print stays readable; wide photos: 2600 px on the long side */
+      if(w<=h)sc=Math.min(2,1600/w,3800/h);else if(big>2600)sc=2600/big;else if(w<1400)sc=Math.min(2,1600/w);
       var cw=Math.max(1,Math.round(w*sc)),ch=Math.max(1,Math.round(h*sc)),c=document.createElement('canvas');c.width=cw;c.height=ch;
       var x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,cw,ch);x.drawImage(bmp,0,0,cw,ch);
       var im=x.getImageData(0,0,cw,ch),d=im.data,i,g,px,py,N=cw*ch,gr=new Uint8Array(N);
@@ -4454,7 +4532,9 @@ function msPrep(f){
       for(i=255;i>=0;i--){a+=hist[i];if(a>N*0.005){hi=i;break}}
       if(hi-lo<40)return f;
       var k=255/(hi-lo);
-      for(i=0,px=0;px<N;px++,i+=4){g=(gr[px]-lo)*k;g=g<0?0:g>255?255:g;d[i]=d[i+1]=d[i+2]=g}
+      for(px=0;px<N;px++){g=(gr[px]-lo)*k;gr[px]=g<0?0:g>255?255:g}
+      msDots(gr,cw,ch);
+      for(i=0,px=0;px<N;px++,i+=4){d[i]=d[i+1]=d[i+2]=gr[px]}
       x.putImageData(im,0,0);return c;
     }catch(e){return f}
   })();
@@ -4468,9 +4548,13 @@ function msParse(txt){
     if(!nums.length||first<0)return;
     var name=l.slice(0,first).replace(/[.\-–—:·*=,]+$/g,'').replace(/^[\d.\-–—)*•\s]+/,'').replace(/[.\-–—:·*=,\s]+$/,'').replace(/\b(half|full|h|f)\s*$/i,'').trim();
     if(name.replace(/[^A-Za-z\u0900-\u097F]/g,'').length<3||name.length>60)return;
-    var pf=nums[nums.length-1],ph=nums.length>1&&nums[0]<pf?nums[0]:'';
-    out.push({n:name.replace(/\b([a-z])([a-z]*)/g,function(a,b,c){return b.toUpperCase()+c}),pf:String(pf),ph:ph===''?'':String(ph),veg:!NV.test(name),on:true});
+    var pf=nums[nums.length-1],ph=nums.length>1&&nums[0]<pf?nums[0]:'',chk=false;
+    if(pf>=1000&&/^3\d{3}$/.test(String(pf))){pf=pf-3000;chk=true;if(ph>=1000)ph=ph-3000}
+    name=name.split(' ').reduce(function(a,t){a.push(t);return a},[]);while(name.length>1&&(name[name.length-1].replace(/[^A-Za-z0-9\u0900-\u097F]/g,'').length<2||/^\d$/.test(name[name.length-1])))name.pop();name=name.join(' ').replace(/[>~\-–—]+$/,'').trim();
+    out.push({chk:chk,n:name.replace(/\b([a-z])([a-z]*)/g,function(a,b,c){return b.toUpperCase()+c}),pf:String(pf),ph:ph===''?'':String(ph),veg:!NV.test(name),on:true});
   });
+  /* the rupee sign is often read as a 3: if that happened, ask the owner to check 3-digit prices that start with 3 */
+  if(out.some(function(o){return o.chk}))out.forEach(function(o){if(/^3\d\d$/.test(o.pf))o.chk=true});
   return out;
 }
 function msLoad(){
@@ -4480,23 +4564,53 @@ function msLoad(){
     s.onload=ok;s.onerror=function(){no(new Error('Could not load the reader. Check your internet and try again.'))};document.head.appendChild(s);
   });
 }
+function msExtract(r){
+    var ls=r.data.lines||[];
+    var PR=/^[^\dA-Za-z]{0,2}[A-Za-z]?\d{2,4}$/,info=ls.map(function(l){
+      var w=(l.words||[]).filter(function(x){return String(x.text||'').trim()});
+      if(!w.length)return {t:'',priced:false};
+      if(!l.words||!l.words.length)return {t:l.confidence>=60?l.text:'',priced:false};
+      var last=w[w.length-1],lt=String(last.text).trim(),price=w.length>1&&PR.test(lt),body=price?w.slice(0,-1):w;
+      var nm=body.filter(function(x){return x.confidence>=55||(/^\d+$/.test(String(x.text).trim())&&x.confidence>=30)});
+      var lead=[];for(var q=0;q<body.length&&body[q].confidence>=85;q++)lead.push(body[q]);
+      var strong=!price&&lead.length>0&&lead.length<=4&&body.slice(lead.length).every(function(x){return x.confidence<55})&&/[a-z]/.test(lead.map(function(x){return x.text}).join(''));
+      var hasName=nm.some(function(x){return /[A-Za-z\u0900-\u097F]{3,}/.test(x.text)});
+      return {t:(price&&hasName?nm.map(function(x){return x.text.trim()}).concat([lt]):nm.map(function(x){return x.text.trim()})).join(' '),priced:price&&hasName,strong:strong,name:(lead.length?lead:body).map(function(x){return x.text.trim()}).join(' ')};
+    });
+    var fi=-1,li=-1;info.forEach(function(o,i){if(o.priced){if(fi<0)fi=i;li=i}});
+    var skipped=info.filter(function(o,i){return !o.priced&&o.strong&&i>fi&&i<li}).map(function(o){return o.name}).slice(0,12);
+    var raw=ls.length?info.map(function(o){return o.t}).filter(function(t){return t}).join('\n'):(r.data.text||'');
+    return {raw:raw,skipped:skipped};
+}
+function msKey(n){return String(n).toLowerCase().replace(/\(.*?\)/g,'').replace(/[^a-z\u0900-\u097f]/g,'')}
 async function msFile(inp){
   var f=inp.files&&inp.files[0];inp.value='';if(!f)return;
-  MS.st='work';MS.pct=0;MS.ph='Preparing your photo…';MS.err='';MS.rows=[];render();
+  MS.st='work';MS.pct=0;MS.ph='Preparing your photo…';MS.err='';MS.rows=[];MS.skipped=[];render();
   try{
     await msLoad();
     MS.ph='Preparing your photo…';var img=await msPrep(f);
-    var r=await Tesseract.recognize(img,MS.lang,{logger:function(m){var ph=m.status==='recognizing text'?'Reading your menu…':(/load|init/i.test(m.status||'')?'Getting the reader ready (first time only)…':MS.ph);if(ph!==MS.ph){MS.ph=ph;var e2=document.getElementById('msph');if(e2)e2.textContent=ph}if(m.status==='recognizing text'){var p=Math.round(m.progress*100);if(p!==MS.pct){MS.pct=p;var e=document.getElementById('msp');if(e)e.textContent=p+'%'}}}});
-    var ls=r.data.lines||[];
-    /* keep only lines the reader is fairly sure about, so junk from a bad photo is not listed */
-    MS.raw=ls.length?ls.filter(function(l){return l.confidence>=60}).map(function(l){return l.text}).join('\n'):(r.data.text||'');MS.rows=msParse(MS.raw);
+    var worker=await Tesseract.createWorker(MS.lang,1,{logger:function(m){var ph=m.status==='recognizing text'?'Reading your menu…':(/load|init/i.test(m.status||'')?'Getting the reader ready (first time only)…':MS.ph);if(ph!==MS.ph){MS.ph=ph;var e2=document.getElementById('msph');if(e2)e2.textContent=ph}if(m.status==='recognizing text'){var p=Math.round(m.progress*100);if(p!==MS.pct){MS.pct=p;var e=document.getElementById('msp');if(e)e.textContent=p+'%'}}}});
+    var r1=await worker.recognize(img),e1=msExtract(r1),rows=msParse(e1.raw),skipped=e1.skipped.slice();
+    /* second look with another page-layout setting: it often finds dishes the first look missed */
+    try{
+      MS.pct=0;MS.ph='Reading again to find more dishes…';var e3=document.getElementById('msph');if(e3)e3.textContent=MS.ph;
+      await worker.setParameters({tessedit_pageseg_mode:'4'});
+      var r2=await worker.recognize(img),e2=msExtract(r2),rows2=msParse(e2.raw),have={};
+      rows.forEach(function(o){have[msKey(o.n)]=1});
+      rows2.forEach(function(o){var k=msKey(o.n);if(k.length>=3&&!have[k]&&Number(o.pf)<1000){have[k]=1;o.chk=true;rows.push(o)}});
+      e2.skipped.forEach(function(n){if(skipped.indexOf(n)<0)skipped.push(n)});
+    }catch(e4){}
+    try{await worker.terminate()}catch(e5){}
+    var haveK={};rows.forEach(function(o){haveK[msKey(o.n)]=1});
+    MS.skipped=skipped.filter(function(n){return !haveK[msKey(n)]}).slice(0,12);
+    MS.rows=rows;
     MS.st='review';if(!MS.rows.length)MS.err='No dishes could be read clearly. Take a flat, straight photo in good light. If the menu is on a computer or phone screen, take a screenshot instead of a photo of the screen. Or add items one by one.';
   }catch(e){MS.st='';MS.err=e.message||'Could not read the photo.'}
   render();
 }
 function msSet(i,k,v){MS.rows[i][k]=v}
 function msDrop(i){MS.rows.splice(i,1);render()}
-function msCancel(){MS.st='';MS.rows=[];MS.err='';render()}
+function msCancel(){MS.st='';MS.rows=[];MS.err='';MS.skipped=[];render()}
 function msSave(){
   var rows=MS.rows.filter(function(r){return r.on&&r.n.trim()}),bad='';
   var body=rows.map(function(r,i){var pf=toPaise(r.pf),ph=String(r.ph).trim()===''?null:toPaise(r.ph);
@@ -4516,9 +4630,11 @@ function msHtml(){
   if(MS.err)h+='<div class="err" role="alert" style="margin-bottom:8px">'+esc(MS.err)+'</div>';
   if(MS.st==='review'&&MS.rows.length){
     h+='<div class="sub" style="margin:0 0 6px">Found '+MS.rows.length+' items. Fix any mistakes, untick or remove what you do not want.</div>';
+    if(MS.skipped&&MS.skipped.length)h+='<div class="item" style="margin:0 0 8px;border-color:#b45309"><b style="color:#b45309">Dishes read without a price</b><div class="sub" style="margin:4px 0 0">'+esc(MS.skipped.join(', '))+'. Add them with Add item.</div></div>';
     h+='<label class="fl" for="msc">Put all in category</label><select id="msc" class="t" onchange="MS.cat=this.value"><option value="">No category</option>'+O.cats.map(function(c){return '<option value="'+c.id+'"'+(MS.cat===c.id?' selected':'')+'>'+esc(c.name)+'</option>'}).join('')+'</select>';
     MS.rows.forEach(function(r,i){
       h+='<div class="item" style="margin:8px 0 0"><div class="row" style="gap:8px"><input type="checkbox" aria-label="Include" '+(r.on?'checked':'')+' onchange="msSet('+i+',\'on\',this.checked)"><input class="t sp" aria-label="Item name" value="'+esc(r.n)+'" oninput="msSet('+i+',\'n\',this.value)"><button class="btn ghost sm" aria-label="Remove" onclick="msDrop('+i+')">✕</button></div>';
+      if(r.chk)h+='<div class="sub" style="margin:6px 0 0;color:#b45309">Please check this price. The ₹ sign can be misread as a digit.</div>';
       h+='<div class="row" style="gap:8px;margin-top:6px"><span>₹</span><input class="t" style="width:90px" inputmode="decimal" aria-label="Full price" placeholder="Full" value="'+esc(r.pf)+'" oninput="msSet('+i+',\'pf\',this.value)"><input class="t" style="width:90px" inputmode="decimal" aria-label="Half price" placeholder="Half" value="'+esc(r.ph)+'" oninput="msSet('+i+',\'ph\',this.value)"><span class="sp"></span><label class="sub" style="margin:0"><input type="checkbox" '+(r.veg?'checked':'')+' onchange="msSet('+i+',\'veg\',this.checked)"> Veg</label></div></div>';
     });
     h+='<div class="row" style="margin-top:12px"><button class="btn ghost" onclick="msCancel()">Cancel</button><button class="btn sp" onclick="msSave()">Save all items</button></div></div>';
@@ -4535,6 +4651,75 @@ window.addEventListener('hashchange',function(){
   try{var h=decodeURIComponent(location.hash||'');if(!parseQR(h))return;
     if(S.prof&&S.prof.role==='customer'&&!S.needEmail){try{history.replaceState(null,'',location.pathname+location.search)}catch(e){}handleQR(h)}else PENDQR=h}catch(e){}
 });
+/* ---------- fingerprint login (Android app only) ----------
+   With fingerprint login on, the phone remembers this login. After you log out (or on a new start with no login)
+   the login page shows a "Log in with fingerprint" button. Your password is never stored. */
+var BIO={busy:false,cb:null};
+function bioState(){try{return window.MFBAndroid&&MFBAndroid.bioState?String(MFBAndroid.bioState()):'no'}catch(e){return 'no'}}
+function bioOn(){return sget('mfb_bio')==='1'}
+function bioSaved(){return bioOn()&&!!sget('mfb_bio_sess')}
+function bioPrompt(title,cb){BIO.cb=cb;try{MFBAndroid.bioAuth(title)}catch(e){BIO.cb=null;cb(false,'Fingerprint is not available.')}}
+window.mfbBioResult=function(ok,msg){var cb=BIO.cb;BIO.cb=null;BIO.busy=false;if(cb)cb(!!ok,msg||'')};
+/* keep the saved login up to date: the login token changes every time it is renewed */
+function bioSync(){
+  try{
+    if(!bioOn()||!S.sess||!S.sess.refresh_token||!S.authUser||sget('mfb_bio_uid')!==S.authUser.id)return;
+    sset('mfb_bio_sess',JSON.stringify({rt:S.sess.refresh_token}));
+  }catch(e){}
+}
+function bioClear(){sset('mfb_bio',null);sset('mfb_bio_sess',null);sset('mfb_bio_uid',null)}
+/* the button on the login page */
+function bioLoginBtn(){
+  if(!bioSaved()||bioState()!=='ok')return '';
+  var rm=remembered();
+  return '<button class="btn" style="width:100%;margin-top:14px;display:flex;align-items:center;justify-content:center;gap:10px"'+(S.busy?' disabled':'')+' onclick="bioLogin()"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 11v4c0 2-.5 4-2 6"/><path d="M8 13v1c0 2-.4 4-1.5 5.5"/><path d="M16 12v3c0 1.5-.2 3-.8 4.5"/><path d="M5 11a7 7 0 0 1 14 0v1"/><path d="M8.5 6.5A5 5 0 0 1 17 10"/></svg>Log in'+(rm&&rm.n?' as '+esc(rm.n):'')+' with fingerprint</button><div class="sub" style="text-align:center;margin:10px 0 0">or log in with your password</div>';
+}
+function bioLogin(){
+  if(S.busy||BIO.busy)return;
+  BIO.busy=true;L.err='';
+  bioPrompt('Log in to MyFoodBill',function(ok,msg){
+    if(!ok){L.err=(msg&&msg!=='cancel')?msg:'';render();return}
+    var rt='';try{rt=JSON.parse(sget('mfb_bio_sess')||'{}').rt||''}catch(e){}
+    if(!rt){bioClear();L.err='Fingerprint login has expired. Please log in with your password.';render();return}
+    S.busy=true;render();
+    (async function(){
+      try{
+        S.sess={access_token:'',refresh_token:rt,expires_at:0};
+        var good=await refresh();
+        if(!good){S.sess=null;bioClear();S.busy=false;L.err='Fingerprint login has expired. Please log in with your password.';render();return}
+        await afterLogin();
+      }catch(e){S.sess=null;S.busy=false;L.err=e.message;render()}
+    })();
+  });
+}
+/* offer once after a password login */
+function bioView(){
+  return '<h1>Log in with your fingerprint?</h1><div class="sub">Next time, touch the fingerprint sensor on the login page instead of typing your password. Your password stays the same, and you can turn this off in Settings. Anyone whose fingerprint is saved on this phone will be able to log in.</div><div class="item"><button class="btn" style="width:100%"'+(S.busy?' disabled':'')+' onclick="bioEnable(true)">Yes, turn it on</button><button class="btn ghost" style="width:100%;margin-top:8px"'+(S.busy?' disabled':'')+' onclick="bioLater()">Not now</button></div>';
+}
+function bioLater(){sset('mfb_bio_ask','1');S.needBio=false;act(afterLogin)}
+function bioEnable(fromOffer){
+  bioPrompt('Turn on fingerprint login',function(ok,msg){
+    if(ok){
+      sset('mfb_bio','1');sset('mfb_bio_ask','1');
+      if(S.authUser)sset('mfb_bio_uid',S.authUser.id);
+      bioSync();
+      toast('Fingerprint login is on',true);
+      if(fromOffer){S.needBio=false;act(afterLogin)}else render();
+    }else{if(msg&&msg!=='cancel')toast(msg);render()}
+  });
+}
+function bioToggle(){
+  if(bioOn()){bioClear();toast('Fingerprint login is off',true);render()}
+  else bioEnable(false);
+}
+function bioRow(){
+  var st=bioState();if(st==='no')return '';
+  var on=bioOn();
+  var lab='<span class="sub" style="margin:0">Fingerprint login</span><br>';
+  if(st==='old')return '<div class="row" style="margin-top:10px"><div class="sp">'+lab+'<span class="sub" style="margin:0">Needs Android 9 or newer.</span></div></div>';
+  if(st!=='ok'&&!on)return '<div class="row" style="margin-top:10px"><div class="sp">'+lab+'<span class="sub" style="margin:0">Save a fingerprint in your phone settings first.</span></div></div>';
+  return '<div class="row" style="margin-top:10px"><div class="sp">'+lab+'<b>'+(on?'On':'Off')+'</b></div><button class="btn ghost sm" onclick="bioToggle()">'+(on?'Turn off':'Turn on')+'</button></div>';
+}
 </script>
 </body>
 </html>
