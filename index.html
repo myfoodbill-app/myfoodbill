@@ -197,6 +197,12 @@ select.t{appearance:auto}
 .rcvbox .rc-r{display:flex;justify-content:space-between;gap:10px;background:rgba(255,255,255,.16);border-radius:10px;padding:8px 12px;margin-top:6px;text-align:left;font-size:15px}
 .rcvbox .rc-r b{text-align:right;word-break:break-word}
 .rcvbox .rc-tok{font-size:34px;font-weight:800;letter-spacing:1px}
+
+.dcard{border-radius:14px;padding:14px 16px;margin:10px 0;color:#fff;background:linear-gradient(135deg,#0e7f6c,#0a5a4c);box-shadow:0 2px 10px rgba(14,127,108,.35)}
+.dcard.offer{color:#1b1200;background:linear-gradient(135deg,#f6c445,#e8a317);box-shadow:0 2px 10px rgba(232,163,23,.4)}
+.dcard .dc-t{font-size:19px;font-weight:800;line-height:1.25}
+.dcard .dc-m{font-size:14px;margin-top:3px;opacity:.95}
+@media print{.dcard{display:none}}
 </style>
 </head>
 <body>
@@ -2773,8 +2779,8 @@ async function boot(){
 
 /* ---------- customer ---------- */
 var PSEL='food_places?select=id,code,name,area,contact_phone,upi_id,is_accepting,use_hours,open_time,close_time,is_open,offers_delivery,delivery_charge_paise,address,pincode';
-var PP=true;/* plan_parcel exists only after SQL step 15; the app still works without it */
-async function restP(q){try{return await rest(PSEL+(PP?',plan_parcel':'')+q)}catch(e){if(PP&&/plan_parcel/.test(String(e&&e.message||e))){PP=false;return await rest(PSEL+q)}throw e}}
+var PXL=[',plan_parcel,offer_on,offer_kind,offer_value,offer_title',',plan_parcel',''],PXI=0;/* extra columns exist only after SQL steps 15 and 17; the app still works without them */
+async function restP(q){for(;;){try{return await rest(PSEL+PXL[PXI]+q)}catch(e){if(PXI<PXL.length-1&&/column|plan_parcel|offer_/i.test(String(e&&e.message||e))){PXI++;continue}throw e}}}
 async function loadPlaces(){C.places=await restP('&order=name.asc&limit=500')||[]}
 async function loadMenu(p){
   var q='?place_id=eq.'+encodeURIComponent(p.id)+'&select=*';
@@ -2788,6 +2794,7 @@ async function openPlace(code,qr){
   if(!p)throw new Error('No Food Place with code '+code+'.');
   var fr=await restP('&id=eq.'+encodeURIComponent(p.id));if(fr&&fr[0])Object.assign(p,fr[0]);
   if(!C.place||C.place.id!==p.id){C.cart={};C.ful='pickup'}
+  C.disc=null;try{var rr=await rest('regular_customers?place_id=eq.'+encodeURIComponent(p.id)+'&customer_id=eq.'+encodeURIComponent(S.prof.id)+'&select=kind,value');C.disc=rr&&rr[0]||null}catch(e){C.disc=null}
   await loadMenu(p);C.place=p;C.qr=qr||(C.qr&&C.qr.code===code?C.qr:null);
   C.type=qrValid()?'table':'parcel';C.view='menu';C.vf='all';C.ferr='';C.fcode='';C.fq='';window.scrollTo(0,0);
 }
@@ -2804,7 +2811,7 @@ function placeList(){
   var q=C.fq.trim().toLowerCase();
   var R=C.places.filter(function(r){return !q||r.name.toLowerCase().indexOf(q)>=0||(r.area||'').toLowerCase().indexOf(q)>=0});
   if(!R.length)return '<div class="sub">'+(C.places.length?'No Food Place found. Try another name, or enter the code below.':'No Food Places have joined yet.')+'</div>';
-  return R.map(function(r){return '<button class="item row link" onclick="pickPlace(\''+esc(r.code)+'\')"><div class="sp"><b>'+esc(r.name)+'</b><div class="sub" style="margin:0">'+(r.area?esc(r.area)+' · ':'')+'Code '+esc(r.code)+'</div></div>'+(r.is_open?'':'<span class="tag">Closed</span>')+'<span aria-hidden="true">›</span></button>'}).join('');
+  return R.map(function(r){return '<button class="item row link" onclick="pickPlace(\''+esc(r.code)+'\')"><div class="sp"><b>'+esc(r.name)+'</b><div class="sub" style="margin:0">'+(r.area?esc(r.area)+' · ':'')+'Code '+esc(r.code)+'</div></div>'+(r.is_open?(r.offer_on?'<span class="tag" style="background:#e8a317;color:#1b1200">Offer</span>':''):'<span class="tag">Closed</span>')+'<span aria-hidden="true">›</span></button>'}).join('');
 }
 function findView(){
   return '<h1>Find a Food Place</h1><div class="sub">At the Food Place: scan the QR on your table. From home or outside: search the name or enter the code, then order a parcel and pick it up later.</div>'
@@ -2875,11 +2882,20 @@ function calc(){
     var q=C.cart[itemKey(it.id,po)]||0;if(!q)return;
     var pr=po==='half'?it.price_half_paise:it.price_full_paise;sub+=pr*q;qty+=q;lines.push({n:it.name+(po==='half'?' (Half)':''),q:q,p:pr});
   })});
-  tot=sub;
-  C.menu.charges.forEach(function(c){var a=c.kind==='percent'?Math.round(sub*c.value/100):Math.round(c.value*100);ch.push({n:c.name,a:a});tot+=a});
+  var disc=0,dl='';
+  var dn='';
+  if(sub>0){
+    var rd=0,rl='',gd=0,gl='',P=C.place||{};
+    if(C.disc){rd=C.disc.kind==='pct'?Math.round(sub*C.disc.value/100):Math.min(C.disc.value,sub);rl=C.disc.kind==='pct'?C.disc.value+'%':rs(C.disc.value)}
+    if(P.offer_on&&P.offer_value){gd=P.offer_kind==='pct'?Math.round(sub*P.offer_value/100):Math.min(P.offer_value,sub);gl=P.offer_kind==='pct'?P.offer_value+'%':rs(P.offer_value)}
+    if(gd>rd){disc=gd;dl=gl;dn=(P.offer_title||'Offer')+' '+gl}else if(rd>0){disc=rd;dl=rl;dn='Regular customer discount '+rl}
+    disc=Math.max(0,Math.min(disc,sub));
+  }
+  var base=sub-disc;tot=base;
+  C.menu.charges.forEach(function(c){var a=c.kind==='percent'?Math.round(base*c.value/100):Math.round(c.value*100);ch.push({n:c.name,a:a});tot+=a});
   if(C.type==='parcel')C.menu.pack.forEach(function(c){var a=c.per==='order'?c.cost_paise:c.cost_paise*qty;ch.push({n:'Packing: '+c.name,a:a});tot+=a});
   if(C.type==='parcel'&&C.ful==='delivery'&&C.place.offers_delivery&&C.place.delivery_charge_paise>0){ch.push({n:'Delivery charge',a:C.place.delivery_charge_paise});tot+=C.place.delivery_charge_paise}
-  return {sub:sub,qty:qty,lines:lines,ch:ch,tot:tot};
+  return {sub:sub,qty:qty,lines:lines,ch:ch,tot:tot,disc:disc,dl:dl,dn:dn};
 }
 function setType(t){
   if(t==='table'&&!qrValid()){C.scanErr='Please scan the QR code on your table to place a dine-in order.';C.view='scan';return render()}
@@ -2893,6 +2909,7 @@ function menuView(){
   h+='</div>';
   if(!p.is_open)h+='<div class="err" role="alert"><b>Closed now.</b> This Food Place is not taking orders right now.'+(p.use_hours?' Opening hours: '+hoursText(p)+'.':'')+'</div>';
   h+=placeCard(p);
+  h+=discCards(p);
   if(p.plan_parcel===false&&C.type!=='table')return h+'<div class="note" role="status"><b>Dine-in orders only.</b> This Food Place does not take parcel orders in the app. Scan the QR code on your table to order.</div><button class="btn" style="width:100%;margin-top:10px" onclick="C.view=\'scan\';C.scanErr=\'\';render()">Scan table QR code</button>';
   h+=C.type==='table'?'<div class="ok" role="status">Table '+esc(C.qr.label)+' verified by QR. You pay after you are served.</div>':'<div class="sub">Order a parcel from anywhere and pay first. Then pick it up at the Food Place with your token number'+(p.offers_delivery?', or have it delivered to your address':'')+'. To order at a table, scan the QR on your table.</div>';
   var items=m.items.filter(function(i){return C.vf==='all'||(C.vf==='veg')===!!i.is_veg});
@@ -2919,7 +2936,7 @@ function menuView(){
 function cartView(){
   var b=calc(),h='<button class="lnk" onclick="C.view=\'menu\';render()">‹ Menu</button><h1>Your order</h1><div class="sub">'+esc(C.place.name)+' · Code '+esc(C.place.code)+' · '+(C.type==='table'?'Table '+esc(C.qr.label):'Parcel')+'</div>';
   if(!b.qty)return h+'<div class="item">Your cart is empty.</div>';
-  h+='<div class="item">'+b.lines.map(function(l){return '<div class="tot"><span>'+esc(l.n)+'<span class="sub" style="display:block;margin:0">'+l.q+' × '+rs(l.p)+'</span></span><span>'+rs(l.p*l.q)+'</span></div>'}).join('')+'<div class="tot" style="border-top:1px dashed var(--line);margin-top:6px"><span>Subtotal</span><span>'+rs(b.sub)+'</span></div>'+b.ch.map(function(c){return '<div class="tot"><span>'+esc(c.n)+'</span><span>'+rs(c.a)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(b.tot)+'</span></div></div>';
+  h+='<div class="item">'+b.lines.map(function(l){return '<div class="tot"><span>'+esc(l.n)+'<span class="sub" style="display:block;margin:0">'+l.q+' × '+rs(l.p)+'</span></span><span>'+rs(l.p*l.q)+'</span></div>'}).join('')+'<div class="tot" style="border-top:1px dashed var(--line);margin-top:6px"><span>Subtotal</span><span>'+rs(b.sub)+'</span></div>'+(b.disc>0?'<div class="tot" style="color:var(--acc,#0e7f6c)"><span>'+esc(b.dn)+'</span><span>−'+rs(b.disc)+'</span></div><div class="tot"><span>Food after discount</span><span>'+rs(b.sub-b.disc)+'</span></div>':'')+b.ch.map(function(c){return '<div class="tot"><span>'+esc(c.n)+'</span><span>'+rs(c.a)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(b.tot)+'</span></div></div>';
   h+='<div class="note" style="margin:0 0 10px">The Food Place server checks the prices and calculates the final bill when you place the order.</div>';
   if(C.type==='parcel'){
     if(!C.place.offers_delivery)C.ful='pickup';
@@ -2931,7 +2948,7 @@ function cartView(){
       if(!sa&&AD.loaded){sa=AD.list.filter(function(a){return a.is_default})[0]||AD.list[0];C.addrId=sa?sa.id:''}
       h+='<div class="sub" style="margin:0 0 6px">Choose where to deliver this parcel.'+(C.place.delivery_charge_paise>0?' Delivery charge: <b>'+rs(C.place.delivery_charge_paise)+'</b>.':' Delivery is free.')+'</div>'+addrHtml('pick');
     }
-    h+='<div class="item"><b>How will you pay for this parcel?</b><div class="sub" style="margin:4px 0 8px">Parcel orders are paid first. The owner confirms your payment, then accepts the order. '+(C.ful==='delivery'?'It is then delivered to your address.':'You collect it later using your token number.')+'</div><div class="tabs one">'+[['cash','Cash'],['upi','Pay online'],['card','Card']].map(function(t){return '<button class="'+(C.pcm===t[0]?'on':'')+'" onclick="C.pcm=\''+t[0]+'\';render()">'+t[1]+'</button>'}).join('')+'</div>'+payHelp(C.pcm,b.tot,'pcRef',true)+'</div>';
+    if(b.tot===0)h+='<div class="note">Your discount covers the whole bill. There is nothing to pay.</div>';else h+='<div class="item"><b>How will you pay for this parcel?</b><div class="sub" style="margin:4px 0 8px">Parcel orders are paid first. The owner confirms your payment, then accepts the order. '+(C.ful==='delivery'?'It is then delivered to your address.':'You collect it later using your token number.')+'</div><div class="tabs one">'+[['cash','Cash'],['upi','Pay online'],['card','Card']].map(function(t){return '<button class="'+(C.pcm===t[0]?'on':'')+'" onclick="C.pcm=\''+t[0]+'\';render()">'+t[1]+'</button>'}).join('')+'</div>'+payHelp(C.pcm,b.tot,'pcRef',true)+'</div>';
   }else h+='<div class="note">Dine-in: you pay after you are served.</div>';
   if(!C.place.is_open)h+='<div class="err" role="alert">This Food Place is closed now. You cannot place an order.</div>';
   h+='<div class="bar"><div><button class="btn"'+(C.place.is_open?'':' disabled')+' onclick="placeOrder()"><span>'+(C.type==='parcel'?'Place parcel order':'Place order')+'</span><span>'+rs(b.tot)+'</span></button></div></div>';
@@ -2982,10 +2999,11 @@ function placeOrder(){
   act(async function(){
     var items=[];Object.keys(C.cart).forEach(function(k){var a=k.split(':');items.push({item_id:a[0],qty:C.cart[k],portion:a[1]})});
     if(!items.length)throw new Error('Your cart is empty.');
-    if(C.type==='parcel'&&C.pcm==='upi'&&C.place.upi_id&&String(C.pcRef||'').trim().length<6)throw new Error('Pay first, then enter the UPI transaction ID from your UPI app.');
+    var zero=calc().tot===0;
+    if(!zero&&C.type==='parcel'&&C.pcm==='upi'&&C.place.upi_id&&String(C.pcRef||'').trim().length<6)throw new Error('Pay first, then enter the UPI transaction ID from your UPI app.');
     if(C.type==='parcel'&&C.ful==='delivery'&&!C.addrId)throw new Error('Choose a delivery address, or add a new one.');
     var a={p_place_code:C.place.code,p_order_type:C.type,p_table_label:C.type==='table'?C.qr.label:null,p_qr_secret:C.type==='table'?C.qr.secret:null,p_items:items};
-    if(C.type==='parcel'){a.p_fulfilment=C.ful;if(C.ful==='delivery')a.p_address_id=C.addrId;a.p_pay_method=C.pcm;a.p_upi_ref=C.pcm==='upi'?C.pcRef:null}
+    if(C.type==='parcel'){a.p_fulfilment=C.ful;if(C.ful==='delivery')a.p_address_id=C.addrId;a.p_pay_method=zero?'cash':C.pcm;a.p_upi_ref=(!zero&&C.pcm==='upi')?C.pcRef:null}
     var r=await rpc('place_order',a);
     C.cart={};C.pcRef='';
     await fetchOrder(r.order_id);C.view='track';window.scrollTo(0,0);
@@ -3001,6 +3019,7 @@ function payLabel(o){return {paid:'Paid',cashpending:'Cash pending',upipending:'
 function isPend(o){return o.pay_status==='cashpending'||o.pay_status==='upipending'||o.pay_status==='cardpending'}
 function pmName(o){return o.pay_status==='cashpending'?'cash':o.pay_status==='upipending'?'UPI':'card'}
 function payBtn(o){
+  if(o.pay_status==='paid'&&o.total_paise===0)return '<div aria-live="polite"><button class="paybtn ok" type="button" tabindex="-1" aria-disabled="true">✓ Nothing to pay</button></div>';
   if(o.pay_status==='paid')return '<div aria-live="polite"><button class="paybtn ok" type="button" tabindex="-1" aria-disabled="true">✓ Payment confirmed by owner</button><div class="sub" style="margin:-4px 0 10px;text-align:center">'+esc(o.pay_method||'')+(o.paid_at?' · '+fmtDT(o.paid_at):'')+'</div></div>';
   if(isPend(o))return '<div aria-live="polite"><button class="paybtn wait" type="button" tabindex="-1" aria-disabled="true">Waiting for owner to confirm '+pmName(o)+' payment</button></div>';
   return '';
@@ -3008,8 +3027,8 @@ function payBtn(o){
 function trackView(){
   var o=C.order,fp=o.place_phone||(o.food_places&&o.food_places.contact_phone)||'',h=(o.order_type==='parcel'&&o.approval==='ok'&&o.received_at?rcvBox(o):'')+'<h1>Token '+o.token+'</h1><div class="sub">'+esc(o.order_no)+'<br>'+esc(o.food_places?o.food_places.name:'')+' · '+(o.order_type==='table'?'Table '+esc(o.table_label):'Parcel')+'<br>'+fmtDT(o.created_at)+'</div>'+placeCard(Object.assign({},o.food_places||{},{contact_phone:fp,use_hours:false}));
   h+='<div class="item"><div class="row"><b class="sp">'+statusLabel(o)+'</b><span class="tag">'+payLabel(o)+'</span></div><div class="steps">'+[0,1,2,3].map(function(i){return '<div class="'+(o.approval==='ok'&&i<=o.status?'on':'')+'"></div>'}).join('')+'</div>';
-  h+=(o.order_items||[]).map(function(i){return '<div class="tot"><span>'+esc(i.name)+'<span class="sub" style="display:block;margin:0">'+i.qty+' × '+rs(i.price_paise)+'</span></span><span>'+rs(i.price_paise*i.qty)+'</span></div>'}).join('');
-  h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px">'+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div></div>';
+  h+=billTextBlock(o.bill_header)+(o.order_items||[]).map(function(i){return '<div class="tot"><span>'+esc(i.name)+'<span class="sub" style="display:block;margin:0">'+i.qty+' × '+rs(i.price_paise)+'</span></span><span>'+rs(i.price_paise*i.qty)+'</span></div>'}).join('');
+  h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px">'+discRows(o)+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div>'+billTextBlock(o.bill_footer)+(o.approval!=='rej'?'<button class="btn ghost sm noprint" style="margin-top:8px" onclick="printBill(\''+o.id+'\')">Print bill</button>':'')+'</div>';
   h+=payBtn(o);
   if(o.order_type==='parcel'&&o.fulfilment==='delivery')h+='<div class="item"><b>Deliver to</b><div class="sub" style="margin:4px 0 0;white-space:pre-line">'+esc(o.delivery_address||'')+'</div></div>';
   if(o.approval==='wait'){
@@ -3135,7 +3154,8 @@ function ordersView(){
     h+='<div class="item"><div class="row"><b class="sp" style="font-size:19px">Token '+o.token+' · '+where(o)+'</b><span class="tag">'+statusLabel(o)+'</span></div><div class="sub" style="margin:0 0 6px">'+esc(o.order_no)+'<br>'+fmtDT(o.created_at)+'<br>Customer: '+esc(o.customer_name)+' · '+esc(fmtMob(o.customer_phone))+'</div>';
     h+=ownDelivery(o);
     h+=(o.order_items||[]).map(function(i){return '<div class="tot"><span>'+esc(i.name)+'<span class="sub" style="display:block;margin:0">'+i.qty+' × '+rs(i.price_paise)+'</span></span><span>'+rs(i.price_paise*i.qty)+'</span></div>'}).join('');
-    h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px"><div class="tot"><span>Subtotal</span><span>'+rs(o.subtotal_paise)+'</span></div>'+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div>';
+    h+='<div style="border-top:1px dashed var(--line);margin-top:8px;padding-top:6px">'+(o.discount_paise>0?discRows(o):'<div class="tot"><span>Subtotal</span><span>'+rs(o.subtotal_paise)+'</span></div>')+(o.charges||[]).map(function(c){return '<div class="tot"><span>'+esc(c.name)+'</span><span>'+rs(c.amount_paise)+'</span></div>'}).join('')+'<div class="tot b"><span>Total</span><span>'+rs(o.total_paise)+'</span></div></div>';
+    if(o.approval!=='rej')h+='<button class="btn ghost sm noprint" style="margin-top:8px" onclick="printBill(\''+o.id+'\')">Print bill</button>';
     h+='<div class="row" style="margin-top:6px"><b class="sp">'+payLabel(o)+'</b>'+(o.approval==='ok'&&o.status<3?'<button class="btn sm" onclick="oAdv(\''+o.id+'\')">'+nextLbl(o)+'</button>':'')+'</div>';
     if(o.approval==='wait'&&pend)h+='<div class="sub" style="margin:10px 0 0">Confirm the '+(o.pay_status==='cashpending'?'cash':'payment')+' first, then accept this order.</div>';
     if(o.pay_status==='upipending'&&o.upi_ref)h+='<div class="sub" style="margin:8px 0 0">UPI transaction ID given by the customer: <b>'+esc(o.upi_ref)+'</b></div>';
@@ -3196,7 +3216,7 @@ function placeSettingsHtml(){
   +'</div><div class="cat">Contact number</div><div class="item"><label class="fl" for="cp" style="margin-top:0">Food Place mobile number (shown on customer bills)</label><div class="row"><span class="tag" style="font-size:15px;padding:9px 10px">+91</span><input id="cp" class="t" inputmode="numeric" maxlength="10" placeholder="10-digit number" value="'+esc(p.contact_phone)+'" onchange="saveContact(this.value)"></div>'
   +'</div><div class="cat">Address</div><div class="item"><label class="fl" for="fa" style="margin-top:0">Food Place address (where you are situated)</label><textarea id="fa" class="t" rows="3" maxlength="300" placeholder="Shop or building, street, area, city" oninput="O.addrDraft=this.value" onchange="saveAddr()">'+esc(O.addrDraft!==undefined?O.addrDraft:(p.address||''))+'</textarea>'
   +'<div class="row" style="margin-top:8px"><span class="sp"><label class="fl" for="fz" style="margin-top:0">PIN code</label><input id="fz" class="t" inputmode="numeric" maxlength="6" placeholder="6 digits" value="'+esc(O.pinDraft!==undefined?O.pinDraft:(p.pincode||''))+'" oninput="this.value=this.value.replace(/\\D/g,\'\');O.pinDraft=this.value" onchange="saveAddr()"></span></div><div class="sub" style="margin:4px 0 0">Customers see this address and an Open in Maps button on your menu page. Pickup customers use it to find you.</div>'
-  +'</div><div class="cat">Online payments (UPI)</div><div class="item"><label class="fl" for="up" style="margin-top:0">UPI ID for online parcel payments</label><div class="sub" style="margin:2px 0 6px">Use your business UPI ID if you have one. Personal accounts may show warnings or limits to customers.</div><input id="up" class="t" maxlength="60" placeholder="e.g. yourname@okaxis" autocapitalize="none" value="'+esc(p.upi_id)+'" onchange="saveUpi(this.value)"><div class="sub" style="margin:4px 0 0">Customers who order a parcel from outside pay to this ID, then enter the transaction ID. Check your UPI app and tap Confirm on the order.</div>'
+  +'</div>'+billTextHtml()+'<div class="cat">Online payments (UPI)</div><div class="item"><label class="fl" for="up" style="margin-top:0">UPI ID for online parcel payments</label><div class="sub" style="margin:2px 0 6px">Use your business UPI ID if you have one. Personal accounts may show warnings or limits to customers.</div><input id="up" class="t" maxlength="60" placeholder="e.g. yourname@okaxis" autocapitalize="none" value="'+esc(p.upi_id)+'" onchange="saveUpi(this.value)"><div class="sub" style="margin:4px 0 0">Customers who order a parcel from outside pay to this ID, then enter the transaction ID. Check your UPI app and tap Confirm on the order.</div>'
   +'</div>';
 }
 
@@ -3325,12 +3345,14 @@ function sw(on,label,fn){return '<button class="sw'+(on?' on':'')+'" role="switc
 function ownSetView(){
   var p=O.place,end=new Date(p.trial_ends_at),days=Math.max(0,Math.ceil((end-Date.now())/86400000));
   var t=O.stab||'place',h='<h1>Settings</h1><div class="sub">'+esc(p.name)+' · Code '+esc(p.code)+'</div>';
-  h+='<div class="stick"><div class="tabs" role="tablist">'+[['place','Food Place'],['bill','Bills'],['alert','Alerts'],['sub','Subscription'],['acc','Account']].map(function(x){return '<button role="tab" class="'+(t===x[0]?'on':'')+'" onclick="O.stab=\''+x[0]+'\';window.scrollTo(0,0);render()">'+x[1]+'</button>'}).join('')+'</div></div>';
+  h+='<div class="stick"><div class="tabs" role="tablist">'+[['place','Food Place'],['bill','Bills'],['alert','Alerts'],['rc','Discounts'],['sub','Subscription'],['acc','Account']].map(function(x){return '<button role="tab" class="'+(t===x[0]?'on':'')+'" onclick="O.stab=\''+x[0]+'\';window.scrollTo(0,0);'+(x[0]==='rc'?'rgLoad()':'render()')+'">'+x[1]+'</button>'}).join('')+'</div></div>';
   if(t==='place'){
   h+=placeSettingsHtml();
   }else if(t==='bill'){
   h+='<div class="cat">Bill charges</div><div class="item">'+O.charges.map(function(c){return '<div class="row" style="margin-bottom:8px"><b class="sp">'+esc(c.name)+'</b><input class="p" style="width:64px" inputmode="decimal" aria-label="'+esc(c.name)+' percent" value="'+c.value+'" onchange="setCharge(\''+c.id+'\',this.value)"><span>%</span>'+sw(c.enabled,c.name+' on',"togCharge('"+c.id+"',"+(!c.enabled)+")")+'<button class="btn ghost sm" aria-label="Remove '+esc(c.name)+'" onclick="delCharge(\''+c.id+'\')">✕</button></div>'}).join('')+'<div class="row" style="margin-top:6px"><input class="t" aria-label="New charge name" placeholder="Name, e.g. Service charge" value="'+esc(O.chf.n)+'" oninput="O.chf.n=this.value"><input class="t" style="width:80px" aria-label="New charge percent" inputmode="decimal" placeholder="%" value="'+esc(O.chf.v)+'" oninput="O.chf.v=this.value"></div><button class="btn ghost" style="width:100%;margin-top:8px" onclick="addCharge()">Add charge</button></div>';
   h+='<div class="cat">Packing charges (parcel orders)</div><div class="item">'+O.pack.map(function(c){return '<div class="row" style="margin-bottom:8px"><div class="sp"><b>'+esc(c.name)+'</b><div class="sub" style="margin:0">'+rs(c.cost_paise)+' per '+(c.per==='item'?'item':'order')+'</div></div>'+sw(c.enabled,c.name+' on',"togPack('"+c.id+"',"+(!c.enabled)+")")+'<button class="btn ghost sm" aria-label="Remove '+esc(c.name)+'" onclick="delPack(\''+c.id+'\')">✕</button></div>'}).join('')+'<div class="row" style="margin-top:6px"><input class="t" aria-label="New packing material name" placeholder="e.g. Container" value="'+esc(O.pkf.n)+'" oninput="O.pkf.n=this.value"><input class="t" style="width:90px" aria-label="Cost in rupees" inputmode="decimal" placeholder="₹" value="'+esc(O.pkf.c)+'" oninput="O.pkf.c=this.value"></div><div class="tabs" style="margin:8px 0 0">'+[['order','Per order'],['item','Per item']].map(function(t){return '<button class="'+(O.pkf.per===t[0]?'on':'')+'" onclick="O.pkf.per=\''+t[0]+'\';render()">'+t[1]+'</button>'}).join('')+'</div><button class="btn ghost" style="width:100%;margin-top:8px" onclick="addPack()">Add packing material</button></div>';
+  }else if(t==='rc'){
+  h+=rgView();
   }else if(t==='sub'){
   h+=subHtml(p,days);
   }else if(t==='alert'){
@@ -3372,7 +3394,7 @@ function act(fn){
   S.busy=true;
   return Promise.resolve().then(fn).catch(function(e){toast(e.message||'Something went wrong')}).then(function(){S.busy=false;render()});
 }
-function hdr(){var o=S.prof.role==='owner';return '<div class="appbar noprint">'+LOGO(30)+'<span class="brand">MyFoodBill</span><span class="sp"></span><button class="btn ghost sm" onclick="logout()">Log out</button></div><div class="row noprint" style="margin:2px 0 14px;font-size:14px;gap:8px"><span class="sp">Hi, <b>'+esc(S.prof.name)+'</b></span><span class="tag">'+(o?'Owner':'Customer')+'</span></div>'}
+function hdr(){var o=S.prof.role==='owner';return '<div class="appbar noprint">'+LOGO(30)+'<span class="brand">MyFoodBill</span><span class="sp"></span>'+themeBtn()+'<button class="btn ghost sm" onclick="logout()">Log out</button></div><div class="row noprint" style="margin:2px 0 14px;font-size:14px;gap:8px"><span class="sp">Hi, <b>'+esc(S.prof.name)+'</b></span><span class="tag">'+(o?'Owner':'Customer')+'</span></div>'}
 function wideCls(){
   if(!S.prof)return '';
   if(S.prof.role==='owner')return 'o-'+O.tab+(O.tab==='orders'||(O.tab==='menu'&&(O.mtab||'list')==='list'&&!O.edit)?' gv wd':'')+(O.tab==='tables'||O.tab==='sum'?' wd':'');
@@ -3703,7 +3725,7 @@ function rLoad(){
   var my=++R.seq;R.loading=true;
   var owner=S.prof.role==='owner';
   var p=owner
-    ?rFetch('id,order_no,token,created_at,order_day,order_type,fulfilment,table_label,approval,pay_status,pay_method,subtotal_paise,total_paise,charges,customer_name,customer_phone,order_items(name,qty,price_paise)','&place_id=eq.'+encodeURIComponent(O.place.id)+'&approval=in.(ok,rej)',500)
+    ?rFetch('id,order_no,token,created_at,order_day,order_type,fulfilment,table_label,approval,pay_status,pay_method,subtotal_paise,total_paise,charges,discount_paise,discount_label,customer_name,customer_phone,order_items(name,qty,price_paise)','&place_id=eq.'+encodeURIComponent(O.place.id)+'&approval=in.(ok,rej)',500)
     :rFetch('id,order_no,token,created_at,order_day,order_type,fulfilment,pay_status,pay_method,total_paise,food_places(name,code)','&customer_id=eq.'+encodeURIComponent(S.prof.id)+'&approval=eq.ok&pay_status=eq.paid',1000);
   p.then(function(rows){if(my!==R.seq)return;R.rows=rows;R.loading=false;R.err='';render()},function(e){if(my!==R.seq)return;R.rows=[];R.loading=false;R.err=e.message||'Could not load the summary.';render()});
 }
@@ -3722,6 +3744,7 @@ function ownSumView(){
   var h='<h1 class="noprint">Order summary</h1><div class="sub noprint">'+esc(O.place.name)+' · '+rLabel()+payNote()+'</div>'+rControls();
   h+='<div class="tabs big noprint" style="margin-top:8px;grid-template-columns:repeat(4,1fr)">'+[['all','All'],['online','Online'],['cash','Cash']].map(function(t){return '<button class="'+(R.pay===t[0]?'on':'')+'" onclick="R.pay=\''+t[0]+'\';render()">'+t[1]+'</button>'}).join('')+'<button class="'+(R.sort==='mob'?'on':'')+'" aria-pressed="'+(R.sort==='mob')+'" onclick="R.sort=R.sort===\'mob\'?\'time\':\'mob\';render()">Mob no</button></div></div>';
   h+='<label class="fl noprint" for="mq" style="margin-top:0">Search mobile number</label><input id="mq" class="t noprint" style="background:var(--card);margin-bottom:6px" type="search" inputmode="numeric" maxlength="10" placeholder="Type customer mobile number" value="'+esc(R.mq)+'" aria-label="Search mobile number" oninput="setMq(this)">';
+  h+='<button class="btn ghost noprint" style="width:100%;margin:0 0 6px" onclick="printDiscReport()">Print discount report (for your CA)</button>';
   return h+'<div id="sres">'+ownSumBody()+'</div>';
 }
 function ownSumBody(){
@@ -3732,11 +3755,12 @@ function ownSumBody(){
   var L=all.filter(function(o){return o.pay_status==='paid'&&payOk(o)&&(!R.mq||String(o.customer_phone||'').indexOf(R.mq)>=0)});
   L.sort(function(a,b){if(R.sort==='mob'){var x=String(a.customer_phone||''),y=String(b.customer_phone||'');if(x!==y)return x<y?-1:1}return a.created_at<b.created_at?1:-1});
   var T=L.filter(function(o){return o.order_type==='table'}),PK=L.filter(function(o){return o.order_type==='parcel'&&o.fulfilment!=='delivery'}),DL=L.filter(function(o){return o.order_type==='parcel'&&o.fulfilment==='delivery'});
-  var CA=L.filter(isCash),ON=L.filter(function(o){return !isCash(o)});
+  var CA=L.filter(isCash),ON=L.filter(function(o){return !isCash(o)&&o.total_paise>0});
   var pn=all.filter(function(o){return o.pay_status!=='paid'&&o.pay_status!=='refund'});
   h+='<div class="sgrid" style="display:grid;grid-template-columns:1fr;gap:8px;margin:12px 0">'
    +vr('Orders',L.length)+vr('Total paid',rs(sumM(L,function(o){return o.total_paise})),1)
    +vr('Food sales (before tax and charges)',rs(sumM(L,function(o){return o.subtotal_paise})))
+   +(sumM(L,function(o){return o.discount_paise||0})?vr('Discounts given ('+L.filter(function(o){return o.discount_paise>0}).length+' orders)','−'+rs(sumM(L,function(o){return o.discount_paise||0}))):'')
    +vr('CGST collected',rs(chSum(L,'cgst')))+vr('SGST collected',rs(chSum(L,'sgst')))
    +(chSum(L,'gst')?vr('Other taxes',rs(chSum(L,'gst'))):'')
    +(chSum(L,'other')?vr('Other charges',rs(chSum(L,'other'))):'')
@@ -3780,6 +3804,8 @@ function custSumView(){
 
 /* ---------- printing: our own A4 pages, so the header and "Page n of N" print on every page in any browser ---------- */
 function repLists(){
+  if(R.bill)return billDoc(R.bill);
+  if(R.disc)return discDoc(R.rows||[]);
   var owner=S.prof.role==='owner',rows=R.rows||[];
   var title=owner?'Order summary · '+rLabel()+payNote():'Order summary · '+rLabel();
   var head='<div class="pl">'+LOGO(30)+'<span>MyFoodBill</span></div><div class="p2">'+esc(owner?O.place.name+' · Code '+O.place.code:S.prof.name)+'</div>'+(owner&&O.place.address?'<div class="p5">'+esc(O.place.address.replace(/\s*\n\s*/g,', ')+(O.place.pincode?' - '+O.place.pincode:''))+'</div>':'')+'<div class="p3">'+esc(title)+'</div><div class="p4">Printed on '+esc(fmtDT(Date.now()))+'</div>';
@@ -3798,9 +3824,10 @@ function repLists(){
   var L2=all.filter(function(o){return o.pay_status==='paid'&&payOk(o)&&(!R.mq||String(o.customer_phone||'').indexOf(R.mq)>=0)});
   L2.sort(function(a,b){if(R.sort==='mob'){var x=String(a.customer_phone||''),y=String(b.customer_phone||'');if(x!==y)return x<y?-1:1}return a.created_at<b.created_at?1:-1});
   var T=L2.filter(function(o){return o.order_type==='table'}),PK=L2.filter(function(o){return o.order_type==='parcel'&&o.fulfilment!=='delivery'}),DL=L2.filter(function(o){return o.order_type==='parcel'&&o.fulfilment==='delivery'});
-  var CA=L2.filter(isCash),ON=L2.filter(function(o){return !isCash(o)}),pn=all.filter(function(o){return o.pay_status!=='paid'&&o.pay_status!=='refund'});
+  var CA=L2.filter(isCash),ON=L2.filter(function(o){return !isCash(o)&&o.total_paise>0}),pn=all.filter(function(o){return o.pay_status!=='paid'&&o.pay_status!=='refund'});
   function tp(a){return a.length+' · '+rs(sumM(a,function(o){return o.total_paise}))}
   var pr=[['Orders',L2.length],['Total paid',rs(sumM(L2,function(o){return o.total_paise}))],['Food sales (before tax and charges)',rs(sumM(L2,function(o){return o.subtotal_paise}))],['CGST collected',rs(chSum(L2,'cgst'))],['SGST collected',rs(chSum(L2,'sgst'))]];
+  if(sumM(L2,function(o){return o.discount_paise||0}))pr.splice(3,0,['Discounts given ('+L2.filter(function(o){return o.discount_paise>0}).length+' orders)','−'+rs(sumM(L2,function(o){return o.discount_paise||0}))]);
   if(chSum(L2,'gst'))pr.push(['Other taxes',rs(chSum(L2,'gst'))]);
   if(chSum(L2,'other'))pr.push(['Other charges',rs(chSum(L2,'other'))]);
   pr.push(['Packing charges',rs(chSum(L2,'pack'))],['Delivery charges',rs(chSum(L2,'deliv'))],['Cash paid',tp(CA)],['Online paid (UPI / card)',tp(ON)],['Table orders',tp(T)],['Parcel · pickup',tp(PK)],['Parcel · delivery',tp(DL)],['Payment pending',tp(pn)]);
@@ -3851,9 +3878,9 @@ function buildPrintDoc(){
   document.body.removeChild(host);
   return pages.length;
 }
-function doPrint(){
+function doPrint(force){
   try{
-    if(R.rows===null){toast('Please wait. The summary is still loading.');return}
+    if(!force&&R.rows===null){toast('Please wait. The summary is still loading.');return}
     buildPrintDoc();
     document.body.classList.add('rprint');
     /* Do not clean on 'afterprint': some phones fire it before the Save-as-PDF copy is made, which lost the header. Clean on the app's own done signal or the next touch. */
@@ -4272,6 +4299,16 @@ var GUIDE={
         "You cannot delete your account while an order is still open."
       ],
       "shot": "c_set"
+    },
+    {
+      "t": "Discounts and offers",
+      "w": "Some Food Places give an offer to everyone, or a discount to regular customers.",
+      "s": [
+        "A coloured card at the top of the menu shows the Food Place's offer, or the discount you get as a regular customer.",
+        "Your cart and bill show the discount on its own line, and the taxes are worked out on the lower food amount.",
+        "If both apply you get the better one, not both added.",
+        "Tap Print bill on your order to print it."
+      ]
     }
   ],
   "owner": [
@@ -4386,6 +4423,36 @@ var GUIDE={
         "Tap Print. Every page has the MyFoodBill logo, your Food Place name and address, the title, the date and Page n of N."
       ],
       "shot": "o_sum"
+    },
+    {
+      "t": "Discounts: regular customers and offers for everyone",
+      "w": "Give your regular customers a discount on every order.",
+      "s": [
+        "Open Settings > Discounts. The top card, Offer for all customers, gives every customer a discount, for example a festival offer. Choose Percentage or Fixed amount, type an optional message such as Diwali offer, and tap Save and turn ON. Switch it OFF when the offer ends.",
+        "Open Settings > Regular customers. Below your list you see the customers who have paid orders at your Food Place, the ones with the most orders first. You can search by name or mobile number.",
+        "Tap Add next to a customer. Choose Percentage (1 to 100) or Fixed amount (rupees taken off every order), add an optional note, and tap Save.",
+        "The discount is taken off the food amount only, before any tax and charges. Service charge, GST and other charges are worked out on the lower amount. Packing and delivery charges get no discount.",
+        "The customer sees \"You get 10% off here\" on your menu, and the bill shows a line \"Regular customer discount 10%\". You can have up to 50 regular customers.",
+        "To change or stop a discount, tap Change, then Save or Remove. Recent changes are listed at the bottom.",
+        "Customers see your offer in a coloured card at the top of your menu. If a customer is also a regular customer, they get the better of the two discounts, not both added together."
+      ],
+      "n": [
+        "Old bills never change. A new discount applies only to orders placed after you save it. With 100% the customer has nothing to pay for the food, and the order is marked paid automatically.",
+        "The Order summary shows Discounts given. Use Print discount report (for your CA) on the Summary screen to print one row per discounted order with the order number, food amount, discount, tax and total. Your CA decides the tax treatment."
+      ]
+    },
+    {
+      "t": "Registration numbers and messages on the bill",
+      "w": "Optional text printed on your bills, such as GSTIN, FSSAI number or a greeting.",
+      "s": [
+        "Open Settings > Food Place and scroll to Bill header lines. Write one number per line, up to 4 lines, for example GSTIN: 27ABCDE1234F1Z5 or FSSAI Lic. No: 12345678901234.",
+        "Below it, Bill footer message: a short message such as Happy Diwali! Visit again.",
+        "Leave a box empty if you do not need it. Nothing extra is printed then.",
+        "Tap Print bill on any order to print the bill with these lines."
+      ],
+      "n": [
+        "New text shows on new orders. Bills already placed keep the text they had. You are responsible for the numbers you type."
+      ]
     },
     {
       "t": "Subscription",
@@ -4720,6 +4787,166 @@ function bioRow(){
   if(st!=='ok'&&!on)return '<div class="row" style="margin-top:10px"><div class="sp">'+lab+'<span class="sub" style="margin:0">Save a fingerprint in your phone settings first.</span></div></div>';
   return '<div class="row" style="margin-top:10px"><div class="sp">'+lab+'<b>'+(on?'On':'Off')+'</b></div><button class="btn ghost sm" onclick="bioToggle()">'+(on?'Turn off':'Turn on')+'</button></div>';
 }
+
+
+/* light / dark theme button (remembered on this phone; follows the phone setting until the first tap) */
+function curTheme(){var t=document.documentElement.getAttribute('data-theme');if(t)return t;try{return matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light'}catch(e){return 'light'}}
+(function(){try{var t=localStorage.getItem('mfbTheme');if(t==='dark'||t==='light')document.documentElement.setAttribute('data-theme',t)}catch(e){}})();
+function toggleTheme(){var t=curTheme()==='dark'?'light':'dark';document.documentElement.setAttribute('data-theme',t);try{localStorage.setItem('mfbTheme',t)}catch(e){}render()}
+function themeBtn(){var d=curTheme()==='dark';return '<button class="btn ghost sm" style="margin-right:6px;min-width:40px" aria-label="'+(d?'Switch to light theme':'Switch to dark theme')+'" onclick="toggleTheme()">'+(d?'\u2600\uFE0F':'\uD83C\uDF19')+'</button>'}
+
+/* ===== regular customer discounts, bill text, single-bill printing, discount report ===== */
+var RG={list:[],log:[],q:'',ed:null,kind:'pct',val:'',note:'',loading:false,err:'',seq:0};
+function discName(o){return o.discount_src==='offer'?((o.discount_title||'Offer')+' '+(o.discount_label||'')):('Regular customer discount '+(o.discount_label||''))}
+function offTxt(kind,v){return kind==='pct'?v+'% off':rs(v)+' off every order'}
+function discCards(p){
+  var h='',hasR=!!C.disc,hasO=!!(p.offer_on&&p.offer_value);
+  if(hasO)h+='<div class="dcard offer" role="status"><div class="dc-t">🎉 '+esc(p.offer_title||'Special offer')+'</div><div class="dc-m">'+esc(offTxt(p.offer_kind,p.offer_value))+' on food for everyone</div></div>';
+  if(hasR)h+='<div class="dcard" role="status"><div class="dc-t">⭐ You get '+esc(offTxt(C.disc.kind,C.disc.value))+' here</div><div class="dc-m">Your regular customer discount, taken off the food amount.</div></div>';
+  if(hasR&&hasO)h+='<div class="sub" style="margin:-4px 0 8px">You get the better of the two. They are not added together.</div>';
+  return h;
+}
+function dTxt(kind,v){return kind==='pct'?v+'%':rs(v)+' per order'}
+function rgLoad(){
+  var my=++RG.seq;RG.loading=true;RG.err='';render();
+  Promise.all([rpc('owner_regular_overview',{p_place:O.place.id,p_q:RG.q}),rest('discount_log?place_id=eq.'+encodeURIComponent(O.place.id)+'&select=*&order=created_at.desc&limit=10')]).then(function(r){
+    if(my!==RG.seq)return;RG.list=r[0]||[];RG.log=r[1]||[];RG.loading=false;render();
+  },function(e){if(my!==RG.seq)return;RG.loading=false;RG.err=e.message||'Could not load the list.';render()});
+}
+function rgSearch(v){RG.q=v;clearTimeout(RG.tm);RG.tm=setTimeout(function(){var my=++RG.seq;rpc('owner_regular_overview',{p_place:O.place.id,p_q:RG.q}).then(function(r){if(my!==RG.seq)return;RG.list=r||[];var e=document.getElementById('rgbody');if(e)e.innerHTML=rgBody()},function(){})},350)}
+function rgEdit(id){var c=RG.list.filter(function(x){return x.customer_id===id})[0];if(!c)return;RG.ed=id;RG.kind=c.kind||'pct';RG.val=c.is_regular?(c.kind==='pct'?String(c.value):String(c.value/100)):'';RG.note=c.note||'';render()}
+function rgCancel(){RG.ed=null;render()}
+function rgSave(){
+  var v=RG.kind==='pct'?parseInt(RG.val,10):toPaise(RG.val);
+  if(RG.kind==='pct'&&!(v>=1&&v<=100)){toast('Enter a percentage from 1 to 100');return}
+  if(RG.kind==='fixed'&&!(v>=100&&v<=1000000)){toast('Enter an amount from 1 to 10000 rupees');return}
+  act(async function(){
+    await rpc('owner_set_regular',{p_place:O.place.id,p_customer:RG.ed,p_kind:RG.kind,p_value:v,p_note:RG.note.trim()});
+    RG.ed=null;toast('Saved',true);
+    var r=await Promise.all([rpc('owner_regular_overview',{p_place:O.place.id,p_q:RG.q}),rest('discount_log?place_id=eq.'+encodeURIComponent(O.place.id)+'&select=*&order=created_at.desc&limit=10')]);RG.list=r[0]||[];RG.log=r[1]||[];
+  });
+}
+function rgRemove(id){
+  act(async function(){
+    await rpc('owner_remove_regular',{p_place:O.place.id,p_customer:id});RG.ed=null;toast('Removed',true);
+    var r=await Promise.all([rpc('owner_regular_overview',{p_place:O.place.id,p_q:RG.q}),rest('discount_log?place_id=eq.'+encodeURIComponent(O.place.id)+'&select=*&order=created_at.desc&limit=10')]);RG.list=r[0]||[];RG.log=r[1]||[];
+  });
+}
+function rgEditor(c){
+  return '<div style="margin-top:8px;border-top:1px dashed var(--line);padding-top:8px"><div class="tabs one">'+[['pct','Percentage %'],['fixed','Fixed amount ₹']].map(function(t){return '<button class="'+(RG.kind===t[0]?'on':'')+'" onclick="RG.kind=\''+t[0]+'\';RG.val=\'\';render()">'+t[1]+'</button>'}).join('')+'</div>'
+   +'<label class="fl" for="rgv">'+(RG.kind==='pct'?'Discount percentage (1 to 100)':'Discount in rupees, taken off every order (1 to 10000)')+'</label><input id="rgv" class="t" inputmode="decimal" maxlength="7" placeholder="'+(RG.kind==='pct'?'e.g. 10':'e.g. 50')+'" value="'+esc(RG.val)+'" oninput="RG.val=this.value">'
+   +'<label class="fl" for="rgn">Note for yourself (optional)</label><input id="rgn" class="t" maxlength="100" placeholder="e.g. Daily customer" value="'+esc(RG.note)+'" oninput="RG.note=this.value">'
+   +'<div class="row" style="margin-top:10px"><button class="btn sp"'+(S.busy?' disabled':'')+' onclick="rgSave()">Save</button><button class="btn ghost sp" onclick="rgCancel()">Cancel</button>'+(c.is_regular?'<button class="btn ghost sm" style="color:#c0392b" onclick="rgRemove(\''+c.customer_id+'\')">Remove</button>':'')+'</div></div>';
+}
+function rgRow(c){
+  return '<div class="item"><div class="row"><div class="sp"><b>'+esc(c.name||'Customer')+'</b><div class="sub" style="margin:2px 0 0">'+esc(fmtMob(c.phone))+' · '+c.orders+' order'+(c.orders===1?'':'s')+' · '+rs(c.spent_paise)+' spent</div>'
+   +(c.is_regular?'<div style="margin-top:4px"><span class="tag">'+esc(dTxt(c.kind,c.value))+'</span>'+(c.note?' <span class="sub" style="display:inline;margin:0">'+esc(c.note)+'</span>':'')+'</div>':'')+'</div>'
+   +(RG.ed===c.customer_id?'':'<button class="btn ghost sm" onclick="rgEdit(\''+c.customer_id+'\')">'+(c.is_regular?'Change':'Add')+'</button>')+'</div>'+(RG.ed===c.customer_id?rgEditor(c):'')+'</div>';
+}
+function rgBody(){
+  var reg=RG.list.filter(function(c){return c.is_regular}),oth=RG.list.filter(function(c){return !c.is_regular});
+  var h='<div class="cat">Your regular customers ('+reg.length+' of 50)</div>';
+  h+=reg.length?reg.map(rgRow).join(''):'<div class="item"><div class="sub" style="margin:0">No regular customers yet. Add them from the list below.</div></div>';
+  h+='<div class="cat">Customers who ordered here</div><div class="sub" style="margin:0 0 6px">Most orders first. Tap Add to give a customer a discount.</div>';
+  h+=oth.length?oth.map(rgRow).join(''):'<div class="item"><div class="sub" style="margin:0">'+(RG.q?'No customer found.':'Customers who have paid orders at your Food Place appear here.')+'</div></div>';
+  return h;
+}
+function ofInit(){var p=O.place;RG.of={kind:p.offer_kind||'pct',val:p.offer_value?(p.offer_kind==='fixed'?String(p.offer_value/100):String(p.offer_value)):'',title:p.offer_title||''}}
+function ofSave(){
+  var f=RG.of,v=f.kind==='pct'?parseInt(f.val,10):toPaise(f.val);
+  if(f.kind==='pct'&&!(v>=1&&v<=100)){toast('Enter a percentage from 1 to 100');return}
+  if(f.kind==='fixed'&&!(v>=100&&v<=1000000)){toast('Enter an amount from 1 to 10000 rupees');return}
+  savePlace({offer_kind:f.kind,offer_value:v,offer_title:f.title.trim().slice(0,40),offer_on:true},'Offer saved and ON');
+}
+function ofToggle(on){
+  if(on&&!O.place.offer_value){toast('Fill in the offer and tap Save first');return}
+  savePlace({offer_on:on},on?'Offer is ON':'Offer is OFF');
+}
+function ofCard(){
+  if(!RG.of)ofInit();var p=O.place,f=RG.of;
+  return '<div class="cat">Offer for all customers</div><div class="item"><div class="row"><div class="sp"><b>'+(p.offer_on?'Offer is ON':'Offer is OFF')+'</b><div class="sub" style="margin:2px 0 0">Every customer sees it on your menu and gets it on every order, for example a festival offer. Switch it OFF when it ends.</div></div>'+sw(!!p.offer_on,'Offer for all customers on',"ofToggle("+(!p.offer_on)+")")+'</div>'
+   +'<div class="tabs one" style="margin-top:10px">'+[['pct','Percentage %'],['fixed','Fixed amount ₹']].map(function(t){return '<button class="'+(f.kind===t[0]?'on':'')+'" onclick="RG.of.kind=\''+t[0]+'\';RG.of.val=\'\';render()">'+t[1]+'</button>'}).join('')+'</div>'
+   +'<label class="fl" for="ofv">'+(f.kind==='pct'?'Discount percentage (1 to 100)':'Discount in rupees, taken off every order (1 to 10000)')+'</label><input id="ofv" class="t" inputmode="decimal" maxlength="7" placeholder="'+(f.kind==='pct'?'e.g. 10':'e.g. 50')+'" value="'+esc(f.val)+'" oninput="RG.of.val=this.value">'
+   +'<label class="fl" for="oft">Offer message customers see (optional)</label><input id="oft" class="t" maxlength="40" placeholder="e.g. Diwali offer" value="'+esc(f.title)+'" oninput="RG.of.title=this.value">'
+   +'<button class="btn" style="width:100%;margin-top:10px"'+(S.busy?' disabled':'')+' onclick="ofSave()">Save and turn ON</button><div class="sub" style="margin:8px 0 0">If a customer is also a regular customer, the better of the two discounts applies. They are not added together.</div></div>';
+}
+function rgView(){
+  var h=ofCard()+'<div class="cat">Regular customer discount</div><div class="item"><div class="sub" style="margin:0;line-height:1.5">Give your regular customers a discount. It is taken off the <b>food amount</b> of every order, before any tax and charges. Service charge, GST and other charges are then worked out on the lower amount. Packing and delivery charges get no discount. The customer sees "You get 10% off here", and the bill shows the discount on its own line. Old bills never change.</div></div>';
+  h+='<label class="fl noprint" for="rgq" style="margin-top:4px">Search name or mobile number</label><input id="rgq" class="t" style="background:var(--card);margin-bottom:6px" type="search" placeholder="Name or mobile number" value="'+esc(RG.q)+'" oninput="rgSearch(this.value)">';
+  if(RG.err)h+='<div class="err" role="alert">'+esc(RG.err)+'</div>';
+  if(RG.loading)return h+'<div class="item">Loading…</div>';
+  h+='<div id="rgbody">'+rgBody()+'</div>';
+  if(RG.log.length)h+='<div class="cat">Recent changes</div><div class="item" style="padding:6px 12px">'+RG.log.map(function(l){var t={add:'Added',change:'Changed',remove:'Removed'}[l.action];return '<div class="sub" style="margin:6px 0">'+fmtDT(l.created_at)+' · <b>'+t+'</b> '+esc(l.customer_name||'customer')+': '+esc(l.action==='change'?(l.old_value+' to '+l.new_value):(l.new_value||l.old_value||''))+'</div>'}).join('')+'</div>';
+  return h;
+}
+
+/* bill text (header lines and footer message) settings */
+function cleanLines(v,max,n){return String(v||'').replace(/\r/g,'').split('\n').map(function(x){return x.replace(/\s+/g,' ').trim().slice(0,max)}).filter(Boolean).slice(0,n).join('\n')}
+function billTextHtml(){
+  var p=O.place;
+  return '<div class="cat">Bill header lines (optional)</div><div class="item"><label class="fl" for="bh" style="margin-top:0">Registration numbers on the bill, one per line (up to 4 lines)</label><div class="sub" style="margin:2px 0 6px">For example: GSTIN: 27ABCDE1234F1Z5 · FSSAI Lic. No: 12345678901234. Leave empty if you have none. It prints under your Food Place name.</div><textarea id="bh" class="t" rows="3" maxlength="200" placeholder="GSTIN: ...&#10;FSSAI Lic. No: ..." onchange="saveBillText(\'bill_header\',this.value,4,40)">'+esc(O.bhDraft!==undefined?O.bhDraft:(p.bill_header||''))+'</textarea></div>'
+   +'<div class="cat">Bill footer message (optional)</div><div class="item"><label class="fl" for="bf" style="margin-top:0">Message at the bottom of the bill (up to 2 lines)</label><div class="sub" style="margin:2px 0 6px">For example: Happy Diwali! Visit again. Leave empty for no message.</div><textarea id="bf" class="t" rows="2" maxlength="200" placeholder="Happy Diwali!" onchange="saveBillText(\'bill_footer\',this.value,2,100)">'+esc(O.bfDraft!==undefined?O.bfDraft:(p.bill_footer||''))+'</textarea><div class="sub" style="margin:6px 0 0">New text shows on new orders. Bills already placed keep what they had.</div></div>';
+}
+function saveBillText(col,v,n,max){
+  var c=cleanLines(v,max,n);
+  savePlace((function(){var b={};b[col]=c;return b})(),c?'Saved':'Removed').then(function(){delete O.bhDraft;delete O.bfDraft;render()});
+}
+function billTextBlock(t,cls){
+  t=String(t||'').trim();if(!t)return '';
+  return '<div class="'+(cls||'')+'" style="text-align:center;white-space:pre-line;font-size:13px;margin:6px 0">'+esc(t)+'</div>';
+}
+
+/* discount lines on any bill */
+function discRows(o){
+  if(!(o.discount_paise>0))return '';
+  return '<div class="tot"><span>Subtotal</span><span>'+rs(o.subtotal_paise)+'</span></div><div class="tot" style="color:var(--acc,#0e7f6c)"><span>'+esc(discName(o))+'</span><span>−'+rs(o.discount_paise)+'</span></div><div class="tot"><span>Food after discount</span><span>'+rs(o.subtotal_paise-o.discount_paise)+'</span></div>';
+}
+
+/* print a single bill (customer or owner) using the same A4 printing as the summaries */
+function printBill(id){
+  var o=(C&&C.order&&C.order.id===id)?C.order:(O.orders||[]).filter(function(x){return x.id===id})[0];
+  if(!o){toast('Bill not found');return}
+  R.bill=o;try{doPrint(true)}finally{R.bill=null}
+}
+function billDoc(o){
+  var owner=S.prof.role==='owner',pl=owner?O.place:(o.food_places||{}),nm=pl.name||'',A=[];
+  var head='<div class="pl">'+LOGO(30)+'<span>MyFoodBill</span></div><div class="p2">'+esc(nm)+(pl.code?' · Code '+esc(pl.code):'')+'</div>'
+    +String(o.bill_header||'').split('\n').filter(Boolean).map(function(x){return '<div class="p5">'+esc(x)+'</div>'}).join('')
+    +(pl.address?'<div class="p5">'+esc(String(pl.address).replace(/\s*\n\s*/g,', ')+(pl.pincode?' - '+pl.pincode:''))+'</div>':'')
+    +(pl.contact_phone?'<div class="p5">Mobile: '+esc(pl.contact_phone)+'</div>':'')
+    +'<div class="p3">Bill · '+esc(o.order_no)+'</div><div class="p4">'+esc(fmtDT(o.created_at))+'</div>';
+  A.push({html:'<div class="pgrid"><div><span>Token</span><b>'+esc(String(o.token))+'</b></div><div><span>Order</span><b>'+(o.order_type==='table'?'Table '+esc(o.table_label):(o.fulfilment==='delivery'?'Parcel · Delivery':'Parcel · Pickup'))+'</b></div><div><span>Customer</span><b>'+esc(o.customer_name||S.prof.name||'')+'</b></div></div>'});
+  (o.order_items||[]).forEach(function(i,k){A.push({tid:'bi',title:k?'':'Items',cols:['Item','Qty','Rate','Amount'],al:['l','r','r','r'],cells:[esc(i.name),i.qty,rs(i.price_paise),rs(i.price_paise*i.qty)]})});
+  var t='<table class="ptab"><tbody>'+'<tr><td>Subtotal</td><td class="r">'+rs(o.subtotal_paise)+'</td></tr>';
+  if(o.discount_paise>0)t+='<tr><td>'+esc(discName(o))+'</td><td class="r">−'+rs(o.discount_paise)+'</td></tr><tr><td>Food after discount</td><td class="r">'+rs(o.subtotal_paise-o.discount_paise)+'</td></tr>';
+  (o.charges||[]).forEach(function(c){t+='<tr><td>'+esc(c.name)+'</td><td class="r">'+rs(c.amount_paise)+'</td></tr>'});
+  t+='<tr><td><b>Total</b></td><td class="r"><b>'+rs(o.total_paise)+'</b></td></tr></tbody></table>';
+  A.push({html:t});
+  if(o.pay_status==='paid')A.push({html:'<div class="pnote">Paid'+(o.pay_method&&o.pay_method!=='Free'?' via '+esc(o.pay_method):'')+(o.paid_at?' · '+esc(fmtDT(o.paid_at)):'')+'</div>'});
+  if(o.bill_footer)A.push({html:'<div class="pnote" style="text-align:center;white-space:pre-line">'+esc(o.bill_footer)+'</div>'});
+  return {head:head,atoms:A};
+}
+
+/* discount report for the CA: one row per discounted, paid order; order number only (no customer names) */
+function printDiscReport(){R.disc=true;try{doPrint()}finally{R.disc=false}}
+function discDoc(rows){
+  var rg=rLabel(),head='<div class="pl">'+LOGO(30)+'<span>MyFoodBill</span></div><div class="p2">'+esc(O.place.name+' · Code '+O.place.code)+'</div>'
+    +String(O.place.bill_header||'').split('\n').filter(Boolean).map(function(x){return '<div class="p5">'+esc(x)+'</div>'}).join('')
+    +'<div class="p3">Discount report · '+esc(rg.replace(/^(Daily|Monthly|Yearly) summary · /,''))+'</div><div class="p4">Printed on '+esc(fmtDT(Date.now()))+'</div>';
+  var L=rows.filter(function(o){return o.approval==='ok'&&o.pay_status==='paid'&&o.discount_paise>0});
+  L.sort(function(a,b){return a.created_at<b.created_at?-1:1});
+  var A=[],S1=sumM(L,function(o){return o.subtotal_paise}),D1=sumM(L,function(o){return o.discount_paise});
+  var cg=chSum(L,'cgst'),sg=chSum(L,'sgst'),tt=sumM(L,function(o){return o.total_paise});
+  A.push({html:'<div class="pgrid"><div><span>Discounted orders</span><b>'+L.length+'</b></div><div><span>Food amount</span><b>'+rs(S1)+'</b></div><div><span>Discounts given</span><b>'+rs(D1)+'</b></div><div><span>Food after discount</span><b>'+rs(S1-D1)+'</b></div><div><span>CGST</span><b>'+rs(cg)+'</b></div><div><span>SGST</span><b>'+rs(sg)+'</b></div></div>'});
+  if(!L.length){A.push({html:'<div class="pnote">No discounted orders in this period.</div>'});return {head:head,atoms:A}}
+  L.forEach(function(o,i){
+    var oc=o.total_paise-(o.subtotal_paise-o.discount_paise)-chSumO(o,'cgst')-chSumO(o,'sgst');
+    A.push({tid:'dr',title:i?'':'Discounted orders',cols:['Date','Order no.','Food','Discount','After disc.','CGST','SGST','Other','Total'],al:['l','l','r','r','r','r','r','r','r'],cells:[esc(new Date(o.created_at).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'2-digit'})),esc(o.order_no),rs(o.subtotal_paise),rs(o.discount_paise)+(/%$/.test(o.discount_label||'')?' ('+esc(o.discount_label)+')':''),rs(o.subtotal_paise-o.discount_paise),rs(chSumO(o,'cgst')),rs(chSumO(o,'sgst')),rs(oc),'<b>'+rs(o.total_paise)+'</b>']});
+  });
+  A.push({html:'<div class="pnote">Other = service charge, other taxes, packing and delivery charges. Taxes are shown as charged on the bill. Please check the tax treatment with your CA.</div>'});
+  return {head:head,atoms:A};
+}
+function chSumO(o,k){return chSum([o],k)}
 </script>
 </body>
 </html>
